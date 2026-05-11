@@ -72,14 +72,6 @@ class UNetNoise2NoisePET(UNet):
         # We apply the adjoint operator to each sinogram and average the results
         # Correction is removed before applying the adjoint.
 
-        if attenuation_map is not None:
-            attenuation_map = attenuation_map.repeat_interleave(repeats=len(y), dim=0)  # (B, 1, H, W)
-
-        if corr is not None:
-            corr = corr.repeat_interleave(repeats=len(y), dim=0)  # (B, C, H, W)
-
-        pet_system_operator = self.get_pet_system_operator()
-
         if mode == 'fbp':
             # update scale if corr is provided
             if corr is not None and scale is not None:
@@ -89,6 +81,18 @@ class UNetNoise2NoisePET(UNet):
 
             if corr is not None:
                 y = [ torch.clamp(yy - corr, min=0) for yy in y ]  # list of (B, C, H, W)
+
+        if attenuation_map is not None:
+            attenuation_map = attenuation_map.repeat_interleave(repeats=len(y), dim=0)  # (B, 1, H, W)
+
+        if corr is not None:
+            corr = corr.repeat_interleave(repeats=len(y), dim=0)  # (B, C, H, W)
+
+        # if scale is not None and scale.shape
+
+        pet_system_operator = self.get_pet_system_operator()
+
+
 
         #
         y = torch.stack(y, dim=0) # (n_sinos, B, C, H, W)
