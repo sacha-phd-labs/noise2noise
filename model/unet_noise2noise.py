@@ -185,11 +185,13 @@ class UNetNoise2NoisePET(UNet):
         if seed is not None:
             torch.manual_seed(seed)
 
+        assert len(scale) == x.shape[0], "Scale must have the same batch size as input x"
+
         # Stack scale accordingly
         if split:
             scale = (scale / self.n_splits).repeat(self.n_splits) # Dividing the number of counts by n_splits is equivalent to dividing scale factor by n_splits
 
-        if corr is not None:
+        if corr is not None and split:
             corr = corr / self.n_splits
 
         outputs = torch.zeros((x.shape[0], x.shape[1], self.image_size[0], self.image_size[1]), device=x.device) # (B, C, H, W)
