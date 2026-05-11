@@ -21,6 +21,7 @@ from tools.image.processing import normalize
 
 import matplotlib.pyplot as plt
 import cv2
+from train.format_brain import get_brain_figure
 
 def get_white_matter_mask(brain):
     white_matter_mask = (brain == 36.0)
@@ -854,47 +855,39 @@ class Noise2NoiseTrainer(PytorchTrainer):
                 reconstructions = {
                     'denoised': recon_noise2noise
                 }
+                
+                if epoch == 0:
+                    for input_type, input in zip(['nfpt', 'prompt'], [nfpt, prompt]):
+                        recon_input = self.model.reconstruction(input, scale=scale, corr=corr, attenuation_map=att, mode=self.reconstruction_type, **self.reconstruction_config).to('cpu').squeeze().detach().numpy().astype(np.float32)
+                        recon_input = recon_input
+                        PSNR_input = PSNR(I=gth, K=recon_input, mask=mask)
+                        SSIM_input = SSIM(img1=gth, img2=recon_input, mask=mask)
+                        metrics[f'psnr_{input_type}'] = PSNR_input.item()
+                        metrics[f'ssim_{input_type}'] = SSIM_input.item()
+                        reconstructions[f'{input_type}'] = recon_input * mask
 
-                for input_type, input in zip(['nfpt', 'prompt'], [nfpt, prompt]):
-                    recon_input = self.model.reconstruction(input, scale=scale, corr=corr, attenuation_map=att, mode=self.reconstruction_type, **self.reconstruction_config).to('cpu').squeeze().detach().numpy().astype(np.float32)
-                    recon_input = recon_input
-                    PSNR_input = PSNR(I=gth, K=recon_input, mask=gth>0)
-                    SSIM_input = SSIM(img1=gth, img2=recon_input, mask=gth>0)
-                    metrics[f'psnr_{input_type}'] = PSNR_input.item()
-                    metrics[f'ssim_{input_type}'] = SSIM_input.item()
-                    reconstructions[f'{input_type}'] = recon_input              
-
-                with plt.style.context('ggplot'):
-                    # create matplotlib figure
-                    fig, ax = plt.subplots(1,3, figsize=(10,3))
-                    # fig.suptitle(f'Counts: {inference_pipeline.nb_counts}', fontsize=16)
-                    ax[1].imshow(recon_noise2noise, cmap='gray_r')#, vmin=0, vmax=230)
-                    ax[1].set_title(f'Inference\nreconstruction')
-                    ax[1].axis('off')
-                    plt.colorbar(ax[1].images[0], ax=ax[1], fraction=0.046, pad=0.04)
-                    ax[1].annotate(f'PSNR: {PSNR_denoised:.2f} dB,\n SSIM: {SSIM_denoised:.4f}', xy=(0.05,0.05), xycoords='axes fraction', color='black', fontsize=9, verticalalignment='bottom')
-
-                    ax[2].imshow(reconstructions['nfpt'], cmap='gray_r')#, vmin=0, vmax=230)
-                    ax[2].set_title(('Noise-free\nreconstruction'))
-                    ax[2].axis('off')
-                    plt.colorbar(ax[2].images[0], ax=ax[2], fraction=0.046, pad=0.04)
-                    ax[2].annotate(f'PSNR: {metrics["psnr_nfpt"]:.2f} dB,\n SSIM: {metrics["ssim_nfpt"]:.4f}', xy=(0.05, 0.05), xycoords='axes fraction', color='black', fontsize=9, verticalalignment='bottom')
-
-                    ax[0].imshow(reconstructions['prompt'], cmap='gray_r')#, vmin=0, vmax=230)
-                    ax[0].set_title(f'Prompt\nreconstruction')
-                    ax[0].axis('off')
-                    plt.colorbar(ax[0].images[0], ax=ax[0], fraction=0.046, pad=0.04)
-                    ax[0].annotate(f'PSNR: {metrics["psnr_prompt"]:.2f} dB,\n SSIM: {metrics["ssim_prompt"]:.4f}', xy=(0.05, 0.05), xycoords='axes fraction', color='black', fontsize=9, verticalalignment='bottom')
-                plt.close(fig)
+                for input_type, recon in reconstructions.items():
+                    #log raw numpy array as artifact
+                    tmp_save_path = os.path.join(self.dest_path, f'reconstruction_{input_type}_raw/epoch_{epoch+1}.npy')
+                    os.makedirs(os.path.dirname(tmp_save_path), exist_ok=True)
+                    np.save(tmp_save_path, recon)
+                    mlflow.log_artifact(tmp_save_path, artifact_path='brain_phantom')
+                    os.remove(tmp_save_path)
+                    # log figure with metrics as annotations
+                    fig = get_brain_figure(recon, annotations={
+                        'ssim': metrics.get(f'ssim_{input_type}', metrics.get('ssim', None)),
+                        'psnr': metrics.get(f'psnr_{input_type}', metrics.get('psnr', None)),
+                    })
+                    mlflow.log_figure(fig, f'brain_phantom/reconstruction_{input_type}/epoch_{epoch+1}.png')
                 #
-                mlflow.log_dict(metrics, f'brain_phantom/metrics_epoch_{epoch+1}.json')
-                mlflow.log_figure(fig, f'brain_phantom/reconstruction_epoch_{epoch+1}.png')
+                mlflow.log_dict(metrics, f'brain_phantom/metrics_epoch/{epoch+1}.json')
+                # mlflow.log_figure(fig, f'brain_phantom/reconstruction/epoch_{epoch+1}.png')
 
                 # plot paretto front evolution for bias and variance on brain phantom during training
                 white_matter_bias = []
                 white_matter_variance = []
                 for epoch_ in range(0, epoch+1):
-                    artifact_path = f'brain_phantom/metrics_epoch_{epoch_+1}.json'
+                    artifact_path = f'brain_phantom/metrics_epoch/{epoch_+1}.json'
                     metrics = mlflow.artifacts.load_dict(f"{mlflow.active_run().info.artifact_uri}/{artifact_path}")
                     white_matter_bias.append(metrics.get('bias_white_matter', None))
                     white_matter_variance.append(metrics.get('variance_white_matter', None))
