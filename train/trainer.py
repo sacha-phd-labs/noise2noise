@@ -131,7 +131,9 @@ class Noise2NoiseTrainer(PytorchTrainer):
         self.objective_type = objective_type
         self.consensus_loss = consensus_loss
         if self.consensus_loss:
-            assert not self.supervised, "Consensus loss is only applicable for self-supervised noise2noise training."
+            assert 'mse' in self.objective_type.lower(), "Currently consensus loss is only derived from MSE loss."
+            if self.unet_output_domain == 'photon':
+                assert self.n_splits == 2, "Currently consensus loss is only implemented for n_splits=2 in photon domain."
         
         self.image_consistency = image_consistency
         if self.image_consistency > 0:
@@ -480,8 +482,10 @@ class Noise2NoiseTrainer(PytorchTrainer):
                 output_i = outputs[i]
                 output_j = outputs[j]
                 #
-                if self.unet_output_domain == self.unet_input_domain:
+                if self.unet_output_domain == self.unet_input_domain == 'image':
                     consensus_loss_ij = (1 / self.n_splits**2) * self.compute_loss(output_i, output_j)
+                elif self.unet_output_domain == self.unet_input_domain == 'photon':
+                    consensus_loss_ij = (1 / self.n_splits**2) *self.compute_count_loss(output_i, output_j)
                 else:
                     projected_i = self.pet_system_operator(
                         output_i,
