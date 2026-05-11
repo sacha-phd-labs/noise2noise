@@ -118,10 +118,7 @@ class Noise2NoiseTrainer(PytorchTrainer):
         self.reconstruction_config = reconstruction_config
         unet_config.update({'reconstruction_config': self.reconstruction_config})
         #
-        if not self.supervised:
-            self.n_splits = n_splits # n_splits means n * (n - 1) pairs will be used for noise2noise training
-        else:
-            self.n_splits = 1
+        self.n_splits = n_splits # n_splits means n * (n - 1) pairs will be used for noise2noise training
         unet_config.update({'n_splits': n_splits})
         #
         if (self.unet_output_domain == self.unet_input_domain == 'image') or (self.supervised and unet_output_domain == 'image'):
@@ -569,13 +566,11 @@ class Noise2NoiseTrainer(PytorchTrainer):
                 split_outputs = self.n_splits*[None, ] # to store outputs for all splits for potential consensus loss computation
                 if not self.supervised:
                     splitted_prompts = self.model.split_prompt(prompt, mode='multinomial')
-                    pairwise_permutations = list(itertools.permutations(range(self.n_splits), 2))
-                    scale = scale / self.n_splits
-                    corr = corr / self.n_splits
                 else:
-                    # In supervised setting, we force n_splits = 1 and use the prompt as is with the ground truth as target
-                    splitted_prompts = [prompt]
-                    pairwise_permutations = [(0, 0)] # dummy pair
+                    splitted_prompts = self.n_splits * [prompt / self.n_splits, ] # In supervised setting, we just use the same prompt for all splits, and divide by n_splits to keep the same scale of inputs to the model and loss.
+                scale = scale / self.n_splits
+                corr = corr / self.n_splits
+                pairwise_permutations = list(itertools.permutations(range(self.n_splits), 2))
                 #
                 # Apply reconstruction if needed
                 if self.unet_input_domain == 'image':
@@ -583,10 +578,8 @@ class Noise2NoiseTrainer(PytorchTrainer):
                 else:
                     x = splitted_prompts
 
-                if self.unet_output_domain == 'photon' and not self.supervised:
+                if self.unet_output_domain == 'photon':
                     target = target / self.n_splits # In photon domain, we divide poisson parameter accordingly
-                else:
-                    target = target
 
                 # Get mask for loss computation
                 mask_im = (target > 0).float()
@@ -610,7 +603,7 @@ class Noise2NoiseTrainer(PytorchTrainer):
                     )
                     if self.supervised:
                         if self.unet_input_domain == 'photon' and self.unet_output_domain == 'image':
-                            loss_target = nfpt
+                            loss_target = nfpt / self.n_splits
                         else:
                             loss_target = target
                     else:
@@ -627,17 +620,16 @@ class Noise2NoiseTrainer(PytorchTrainer):
                 loss = sum(split_losses) / len(split_losses)  # average over all pairs
                 #
                 # compute loss addons
-                if not self.supervised:
-                    loss_addons = self.compute_loss_addons(
-                        outputs=split_outputs,
-                        prompt=prompt,
-                        attenuation_map=att,
-                        scale=scale * self.n_splits,
-                        corr=corr * self.n_splits,
-                        mask_im=mask_im,
-                        mask_sino=mask_sino
-                    )
-                    loss = loss + sum(loss_addons.values())
+                loss_addons = self.compute_loss_addons(
+                    outputs=split_outputs,
+                    prompt=prompt,
+                    attenuation_map=att,
+                    scale=scale * self.n_splits,
+                    corr=corr * self.n_splits,
+                    mask_im=mask_im,
+                    mask_sino=mask_sino
+                )
+                loss = loss + sum(loss_addons.values())
                 # 
                 # Update loss
                 self.update_loss(loss)
@@ -681,14 +673,11 @@ class Noise2NoiseTrainer(PytorchTrainer):
                         att_sino = att_sino.to(self.device).float()
                         corr = corr.to(self.device).float()
                         #
-                        if not self.supervised:
-                            # Split data with multinomial statistics. This is done to match training data distribution
-                            x = self.model.split_prompt(prompt, mode='multinomial')
-                            #
-                            scale = scale / self.n_splits
-                            corr = corr / self.n_splits
-                        else:
-                            x = [prompt, ]
+                        # Split data with multinomial statistics. This is done to match training data distribution
+                        x = self.model.split_prompt(prompt, mode='multinomial')
+                        #
+                        scale = scale / self.n_splits
+                        corr = corr / self.n_splits
 
                         # Apply reconstruction if needed
                         if self.unet_input_domain == 'image':
@@ -738,7 +727,7 @@ class Noise2NoiseTrainer(PytorchTrainer):
                             if not self.supervised:
                                 val_loss = self.compute_loss(output=out_i, target=x_j, attenuation_map=att, corr=corr, scale=scale, mask_im=mask_im, mask_sino=mask_sino)
                             else:
-                                loss_target = nfpt if self.unet_input_domain == 'photon' and self.unet_output_domain == 'image' else target
+                                loss_target = nfpt / self.n_splits if self.unet_input_domain == 'photon' and self.unet_output_domain == 'image' else target
                                 val_loss = self.compute_loss(output=out_i, target=loss_target, attenuation_map=att, corr=corr, scale=scale, mask_im=mask_im, mask_sino=mask_sino)
                             val_split_losses.append(val_loss)
                             # Update n2n_ and loss metrics for validation
