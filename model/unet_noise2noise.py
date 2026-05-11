@@ -248,7 +248,14 @@ class UNetNoise2NoisePET(UNet):
         if self.input_domain == 'photon' and self.output_domain == 'image':
             x = self.reconstruction(x, scale=scale, corr=corr, attenuation_map=attenuation_map, mode=self.reconstruction_type, **self.reconstruction_config)  # (B, C, H, W)
         #
+
+        if self.unet_output_domain == self.unet_input_domain == 'photon':
+            x = torch.log1p(x)  # log(1+x) is a variance-stabilizing transform for Poisson data that can be more stable than Anscombe for low counts
+
         output = super().forward(x)
+
+        if self.unet_output_domain == 'photon' and self.unet_input_domain == 'photon':
+            output = torch.expm1(output)  # inverse of log1p
         # 
         # Anscombe inverse transform to convert back to original Poisson scale
         if hasattr(self, 'loss_type') and self.loss_type == 'mse_anscombe' and not self.training:
