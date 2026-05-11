@@ -505,28 +505,80 @@ class Noise2NoiseTrainer(PytorchTrainer):
                 loss_addons[f'consensus_loss'] -= consensus_loss_ij
         #
         if self.prompt_consistency > 0:
-            z = torch.stack(outputs, dim=0) # (n_splits, B, C, H, W)
-            z = torch.mean(z, dim=0) # (B, C, H, W)
 
-            # add prompt consistency
-            if self.prompt_consistency > 0:
-                if self.unet_output_domain == 'image':
+            if self.unet_input_domain == self.unet_output_domain == 'photon':
+
+                if mask_sino is not None:
+                    prompt = prompt * mask_sino
+                    outputs = [output * mask_sino for output in outputs]
+
+                if self.consensus_loss:
+                    z = torch.stack(outputs, dim=0) # (n_splits, B, C, H, W)
+                    z = torch.sum(z, dim=0) # (B, C, H, W)
+                    loss_prompt_consistency = self.prompt_consistency * self.compute_count_loss(z, prompt)
+                else:
+                    loss_prompt_consistency = self.prompt_consistency * sum(self.compute_count_loss(z_, prompt / self.n_splits) for z_ in outputs)
+
+            elif self.unet_input_domain == self.unet_output_domain == 'image':
+
+                if mask_im is not None:
+                    outputs = [output * mask_im for output in outputs]
+
+                if mask_sino is not None:
+                    corr = corr * mask_sino
+                    prompt = prompt * mask_sino
+
+                if self.consensus_loss:
+                    z = torch.stack(outputs, dim=0) # (n_splits, B, C, H, W)
+                    z = torch.mean(z, dim=0) # (B, C, H, W)
+
                     z_projected = self.pet_system_operator(
                         z,
                         attenuation_map=attenuation_map,
                         scale=scale,
                         forward_operator_type=self.forward_operator_type
                     )
+                    loss_prompt_consistency = self.prompt_consistency * self.compute_count_loss(z_projected + corr, prompt)
                 else:
-                    z_projected = z
-                #
+                    z_projected = [ self.pet_system_operator(
+                        z_,
+                        attenuation_map=attenuation_map,
+                        scale=scale,
+                        forward_operator_type=self.forward_operator_type
+                    ) for z_ in outputs ]
+
+                    loss_prompt_consistency = self.prompt_consistency * sum(self.compute_count_loss(z_ + corr, prompt) for z_ in z_projected)
+
+            elif self.unet_input_domain == 'photon' and self.unet_output_domain == 'image':
+
+                if mask_im is not None:
+                    outputs = [output * mask_im for output in outputs]
                 if mask_sino is not None:
-                    z_projected = z_projected * mask_sino
                     corr = corr * mask_sino
-                #
-                loss_prompt_consistency = self.prompt_consistency * self.compute_count_loss(z_projected + corr, prompt)
-                #
-                loss_addons[f'prompt_consistency_loss'] = loss_prompt_consistency
+                    prompt = prompt * mask_sino
+
+                if self.consensus_loss:
+
+                    z = torch.stack(outputs, dim=0) # (n_splits, B, C, H, W)
+                    z = torch.mean(z, dim=0) # (B, C, H, W)
+                    z_projected = self.pet_system_operator(
+                        z,
+                        attenuation_map=attenuation_map,
+                        scale=scale,
+                        forward_operator_type=self.forward_operator_type
+                    )
+                    loss_prompt_consistency = self.prompt_consistency * self.compute_count_loss(z_projected + corr, prompt)
+
+                else:
+                    z_projected = [ self.pet_system_operator(
+                        z_,
+                        attenuation_map=attenuation_map,
+                        scale=scale,
+                        forward_operator_type=self.forward_operator_type
+                    ) for z_ in outputs ]
+                    loss_prompt_consistency = self.prompt_consistency * sum(self.compute_count_loss(z_ + corr, prompt) for z_ in z_projected)
+
+            loss_addons[f'prompt_consistency_loss'] = loss_prompt_consistency
 
         return loss_addons
         
