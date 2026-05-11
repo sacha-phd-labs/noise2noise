@@ -829,17 +829,20 @@ class Noise2NoiseTrainer(PytorchTrainer):
                 nfpt = nfpt.to(self.device).float().unsqueeze(0) # add batch dimension
                 scale = torch.tensor(scale).to(self.device).float().unsqueeze(0) # add batch dimension
                 att = att.to(self.device).float().unsqueeze(0) # add batch dimension
+                att_sino = att_sino.to(self.device).float().unsqueeze(0) # add batch dimension
                 corr = corr.to(self.device).float().unsqueeze(0) # add batch dimension
 
                 # Denoised reconstruction from prompt
-                recon_noise2noise = self.model.forward_inference(prompt, scale=scale, corr=corr, attenuation_map=att, monte_carlo_steps=1, split=True)
-                # recon_noise2noise = torch.where(gth > 0, recon_noise2noise, torch.nan) # set background to zero for better visualization and metric computation
+                recon_noise2noise = self.model.forward_inference(prompt, scale=scale, corr=corr, attenuation_map=att, monte_carlo_steps=1, split=True, mask=None) # (B, C, H, W)
                 recon_noise2noise = recon_noise2noise.to('cpu').squeeze().detach().numpy().astype(np.float32)
+                gth = gth.to('cpu').float().squeeze().detach().numpy().astype(np.float32)
+                mask = gth > 0
+                recon_noise2noise = recon_noise2noise * mask
 
                 # Compute metrics
-                gth = gth.to('cpu').float().squeeze().detach().numpy().astype(np.float32)
-                PSNR_denoised = PSNR(I=gth, K=recon_noise2noise, mask=gth>0)
-                SSIM_denoised = SSIM(img1=gth, img2=recon_noise2noise, mask=gth>0)
+
+                PSNR_denoised = PSNR(I=gth, K=recon_noise2noise, mask=mask)
+                SSIM_denoised = SSIM(img1=gth, img2=recon_noise2noise, mask=mask)
                 metrics = {
                     'psnr': PSNR_denoised.item(),
                     'ssim': SSIM_denoised.item()
