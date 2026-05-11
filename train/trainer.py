@@ -416,8 +416,9 @@ class Noise2NoiseTrainer(PytorchTrainer):
         elif self.objective_type.lower() == 'kl_divergence':
             loss = self.objective(F.log_softmax(output + 1e-8, dim=-1), F.log_softmax(target + 1e-8, dim=-1))
         elif self.objective_type.lower() == 'mse':
-            eps = 1.0 # to avoid division by zero, tuned according to Poisson range
-            loss = self.objective(output / torch.sqrt(target + eps), target / torch.sqrt(target + eps)) # heteroscedastic MSE
+            eps = 1.0
+            weight = 1.0 / (target + eps)
+            loss = (weight * (output - target) ** 2).mean()
         elif self.objective_type.lower() == 'mse_anscombe':
             if not self.model.training:
                 output = anscombe(output) # At inference time, rescale back to Anscombe domain
