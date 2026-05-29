@@ -64,50 +64,27 @@ class UNetNoise2NoisePET(UNet):
                 device=next(self.parameters()).device
             )
 
-        return self.pet_system_operator
-
-    def reconstruction(self, *y, scale=None, attenuation_map=None, corr=None, mode='fbp', **kwargs):
-               
-
-        # We apply the adjoint operator to each sinogram and average the results
-        # Correction is removed before applying the adjoint.
+    def reconstruction(self, y, scale=None, attenuation_map=None, corr=None, mode='fbp', **kwargs):
 
         if mode == 'fbp':
             # update scale if corr is provided
             if corr is not None and scale is not None:
-                count_ratio = [ torch.sum(corr, dim=[1,2,3]) / (torch.sum(yy, dim=[1,2,3])) for yy in y ]  # list of (B,)
-                count_ratio = torch.cat(count_ratio, dim=0)  # (n_sinos * B,)
-                scale = scale * count_ratio  # (n_sinos * B,)
+                count_ratio = torch.sum(corr, dim=[1,2,3]) / (torch.sum(y, dim=[1,2,3]))  # (B,)
+                scale = scale * count_ratio  # (B,)
 
             if corr is not None:
-                y = [ torch.clamp(yy - corr, min=0) for yy in y ]  # list of (B, C, H, W)
-
-        if attenuation_map is not None:
-            attenuation_map = attenuation_map.repeat_interleave(repeats=len(y), dim=0)  # (B, 1, H, W)
-
-        if corr is not None:
-            corr = corr.repeat_interleave(repeats=len(y), dim=0)  # (B, C, H, W)
-
-        # if scale is not None and scale.shape
+                y = torch.clamp(y - corr, min=0)  # (B, C, H, W)
 
         pet_system_operator = self.get_pet_system_operator()
-
-
-
-        #
-        y = torch.stack(y, dim=0) # (n_sinos, B, C, H, W)
         #
         if mode == 'fbp':
-            x_recon = pet_system_operator.fbp(y.view(-1, y.shape[2], y.shape[3], y.shape[4]), scale=scale, **kwargs) # (n_sinos*B, C, H, W)
+            x_recon = pet_system_operator.fbp(y, scale=scale, **kwargs) # (B, C, H, W)
 
         elif mode == 'mlem':
-            x_recon = pet_system_operator.mlem(y.view(-1, y.shape[2], y.shape[3], y.shape[4]), corr=corr, attenuation_map=attenuation_map, scale=scale, **kwargs) # (n_sinos*B, C, H, W)
+            x_recon = pet_system_operator.mlem(y, corr=corr, attenuation_map=attenuation_map, scale=scale, **kwargs) # (B, C, H, W)
         else:
             raise ValueError(f"Unknown reconstruction mode: {mode}")
 
-        #
-        x_recon = x_recon.view(y.shape[0], y.shape[1], x_recon.shape[1], x_recon.shape[2], x_recon.shape[3]) # (n_sinos, B, C, H, W)
-        x_recon = torch.mean(x_recon, dim=0)  # (B, C, H, W)
         
         return x_recon
 
@@ -168,12 +145,12 @@ class UNetNoise2NoisePET(UNet):
 
         return splits
     
-    def forward_inference(self, x, scale, corr=None, seed=None, attenuation_map=None, mask=None, monte_carlo_steps=1, split=True):
+    def forward_inference(self, y, scale, corr=None, seed=None, attenuation_map=None, mask=None, monte_carlo_steps=1, split=True):
         """
         Forward pass through the Noise2Noise U-Net model with input splitting and output aggregation.
         The splitting process has some randomness; set seed for reproducibility.
         Use monte_carlo_steps > 1 for multiple stochastic passes and average the results.
-        :param x: (B, C, H, W) input sinogram tensor
+        :param y: (B, C, H, W) input sinogram tensor
         :param attenuation_map: (B, 1, H, W) attenuation map tensor, used for adjoint computation.
         :param scale: (B,) scale factor to be applied to sinogram before reconstruction.
         :param seed: random seed for splitting
@@ -185,40 +162,37 @@ class UNetNoise2NoisePET(UNet):
         if seed is not None:
             torch.manual_seed(seed)
 
-        assert len(scale) == x.shape[0], "Scale must have the same batch size as input x"
+        assert len(scale) == y.shape[0], "Scale must have the same batch size as input y"
 
         # Stack scale accordingly
         if split:
-            scale = (scale / self.n_splits).repeat(self.n_splits) # Dividing the number of counts by n_splits is equivalent to dividing scale factor by n_splits
+            scale = (scale / self.n_splits)#.repeat(self.n_splits) # Dividing the number of counts by n_splits is equivalent to dividing scale factor by n_splits
+
+        if attenuation_map is not None and split:
+            attenuation_map = attenuation_map.repeat_interleave(repeats=self.n_splits, dim=0)  # (B * n_splits, 1, H, W)
 
         if corr is not None and split:
-            corr = corr / self.n_splits
+            corr = (corr / self.n_splits).repeat_interleave(repeats=self.n_splits, dim=0)  # (B * n_splits, C, H, W)
 
-        outputs = torch.zeros((x.shape[0], x.shape[1], self.image_size[0], self.image_size[1]), device=x.device) # (B, C, H, W)
+        outputs = torch.zeros((y.shape[0], y.shape[1], self.image_size[0], self.image_size[1]), device=y.device) # (B, C, H, W)
         for i in range(monte_carlo_steps):
             # Split input sinogram
             if split:
-                splits = self.split_prompt(x, mode='multinomial', consistent=False)  # list of (B, C, H, W)
+                splitted_prompts = self.split_prompt(y, mode='multinomial', consistent=False)  # list of (B, C, H, W)
             else:
-                splits = [x]
+                splitted_prompts = [y, ]
 
+            splitted_prompts = torch.cat(splitted_prompts, dim=0)  # (B * n_splits, C, H, W)
 
-
-            # Apply reconstruction if needed
-            if self.unet_input_domain == 'image':
-                splits = self.reconstruction(*splits, scale=scale, corr=corr, attenuation_map=attenuation_map, mode=self.reconstruction_type, **self.reconstruction_config)  # (B * n_splits, C, H, W)
-            else:
-                splits = torch.cat(splits, dim=0)  # (B * n_splits, C, H, W)
-                
             # Denoise
-            splits_denoised = self.forward(splits, scale=scale, mask=mask)  # (B * n_splits, C, H, W)
+            splits_denoised = self.forward(y=splitted_prompts, scale=scale.repeat(self.n_splits), mask=mask, corr=corr, attenuation_map=attenuation_map)  # (B * n_splits, C, H, W)
 
             # Expand splits to have (n_splits, B, C, H, W)
             splits_denoised = torch.chunk(splits_denoised, self.n_splits, dim=0)  # list of (B, C, H, W)
 
             # Apply reconstruction if needed and average outputs
             if self.unet_output_domain == 'photon':
-                output = self.reconstruction(*splits_denoised, scale=scale, corr=corr, attenuation_map=attenuation_map, mode=self.reconstruction_type, **self.reconstruction_config) # (B, C, H, W)
+                output = [ self.reconstruction(split_denoised_, scale=scale, corr=corr, attenuation_map=attenuation_map, mode=self.reconstruction_type, **self.reconstruction_config) for split_denoised_ in splits_denoised ]  # (B, C, H, W)
             else:
                 splits_denoised = torch.stack(splits_denoised, dim=0)  # (n_splits, B, C, H, W)
                 output = torch.mean(splits_denoised, dim=0)  # (B, C, H, W)
