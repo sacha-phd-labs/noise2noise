@@ -932,7 +932,6 @@ class Noise2NoiseTrainer(PytorchTrainer):
             torch.cuda.empty_cache()
 
         # log final model
-        self.model.del_unpickable_attributes() # remove attributes that cannot be pickled for MLFlow model registering
         mlflow.pytorch.log_model(self.model, artifact_path="final_model", registered_model_name=self.model_name)
 
         # # log final best models

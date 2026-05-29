@@ -206,10 +206,6 @@ class UNetNoise2NoisePET(UNet):
         outputs = outputs / monte_carlo_steps # (B, C, H, W)
         return outputs
     
-    def del_unpickable_attributes(self):
-        # Remove attributes that cannot be pickled (e.g. for MLFlow model registering)
-        if hasattr(self, 'forward_pet_radon_operator'):
-            del self.forward_pet_radon_operator
 
     def forward(self, x, scale=None, mask=None, corr=None, attenuation_map=None):
         """
