@@ -1,4 +1,5 @@
-from pytorcher.models import UNet
+import os
+from pytorcher.models import *
 
 from pytorcher.pet_system import PetSystem
 
@@ -10,25 +11,62 @@ import hashlib
 
 from pytorcher.utils import tensor_hash, iradon
 
+class ModelInheritanceHandler:
 
-class UNetNoise2NoisePET(UNet):
+    parent = nn.Module  # default parent class
+    _registered_subclasses = []  # track subclasses to update when parent changes
+    
+    @staticmethod
+    def register_subclass(cls):
+        """Register a subclass to be updated when parent class changes."""
+        ModelInheritanceHandler._registered_subclasses.append(cls)
+        return cls
+    
+    @staticmethod
+    def set_parent(parent_class_name):
+        """Change the parent class at runtime and update all registered subclasses."""
+        if parent_class_name in globals():
+            parent_class = globals()[parent_class_name]
+            ModelInheritanceHandler.parent = parent_class
+            # Update all registered subclasses to inherit from the new parent
+            for subclass in ModelInheritanceHandler._registered_subclasses:
+                subclass.__bases__ = (parent_class,)
+        else:
+            # Try dynamic import if not found in globals
+            try:
+                import pytorcher.models as models_module
+                if hasattr(models_module, parent_class_name):
+                    parent_class = getattr(models_module, parent_class_name)
+                    ModelInheritanceHandler.parent = parent_class
+                    for subclass in ModelInheritanceHandler._registered_subclasses:
+                        subclass.__bases__ = (parent_class,)
+                else:
+                    raise ValueError(f"Parent class {parent_class_name} not found in pytorcher.models or global scope.")
+            except ImportError:
+                raise ValueError(f"Parent class {parent_class_name} not found and could not import from pytorcher.models.")
+
+@ModelInheritanceHandler.register_subclass
+class Noise2NoisePETModel(nn.Module):
 
     """
     U-Net model for Noise2Noise.
     If outputs are in the photon/Poisson domain using 'mse_anscombe' loss, apply the rescale stage at inference time.
     """
 
-    def __init__(self, *args,
+    def __init__(self,
                  input_domain='image', output_domain='image',
-                 physics='backward_pet_radon', 
-                 physics_mode='pre_inverse',
                  sinogram_size=(300, 300),
                  geometry={},
                  reconstruction_type='fbp',
                  reconstruction_config={},
                  image_size=(160,160),
                  n_splits=2,
-                 **kwargs):
+                 nn_config={}):
+        # Store the current parent class name for pickle support
+        self._parent_class_name = None
+        if ModelInheritanceHandler.parent != nn.Module:
+            # Store the name of the custom parent class
+            self._parent_class_name = ModelInheritanceHandler.parent.__name__
         #
         self.input_domain = input_domain
         self.output_domain = output_domain
@@ -47,7 +85,22 @@ class UNetNoise2NoisePET(UNet):
         assert self.reconstruction_type.lower() in ['fbp', 'mlem'], "Currently only FBP and MLEM are supported."
         #
         # must call nn.Module init before assigning any nn.Module attributes such as done in init_pet_system_operator and get_reconstruction_operator
-        super(UNetNoise2NoisePET, self).__init__(*args, **kwargs)
+        super(Noise2NoisePETModel, self).__init__(**nn_config)
+    
+    def __getstate__(self):
+        """Prepare model for pickling by storing the parent class name."""
+        state = self.__dict__.copy()
+        # Store parent class name for restoration on unpickling
+        state['_parent_class_name'] = ModelInheritanceHandler.parent.__name__
+        return state
+    
+    def __setstate__(self, state):
+        """Restore model from pickle and apply the correct parent class."""
+        parent_class_name = state.pop('_parent_class_name', None)
+        self.__dict__.update(state)
+        # Restore the parent class if it was customized
+        if parent_class_name and parent_class_name != 'Module':
+            ModelInheritanceHandler.set_parent(parent_class_name)
         
     def get_pet_system_operator(self):
 
@@ -57,12 +110,14 @@ class UNetNoise2NoisePET(UNet):
                 'scanner_radius_mm':self.scanner_radius,
                 'voxel_size_mm':self.voxel_size_mm
             }
-            self.pet_system_operator = PetSystem(
+            pet_system_operator = PetSystem(
                 projector_type='parallelproj_parallel',
                 projector_config=geometry,
                 gaussian_PSF=self.gaussian_PSF,
                 device=next(self.parameters()).device
             )
+
+        return pet_system_operator
 
     def reconstruction(self, y, scale=None, attenuation_map=None, corr=None, mode='fbp', **kwargs):
 

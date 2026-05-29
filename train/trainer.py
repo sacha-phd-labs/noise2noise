@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 import multiprocessing
 
 from data.data_loader import SinogramGenerator, SinogramGeneratorSavedImages
-from model.unet_noise2noise import UNetNoise2NoisePET as UNet
+from model.unet_noise2noise import Noise2NoisePETModel, ModelInheritanceHandler
 
 from pytorcher.trainer import PytorchTrainer
 from pytorcher.utils import normalize_batch
@@ -63,14 +63,14 @@ class Noise2NoiseTrainer(PytorchTrainer):
                 'lr': 1e-3,
                 'weight_decay': 1e-5,
             },
-            unet_config = {
+            model_class_name='UNet',
+            nn_config = {
                 'conv_layer_type': 'SinogramConv2d',
                 'n_levels': 4,
                 'global_conv': 32,
             },
             unet_input_domain='photon',
             unet_output_domain='photon',
-            physics='backward_pet_radon',
             supervised=False,
             reconstruction_type='fbp',
             reconstruction_config={},
@@ -105,8 +105,8 @@ class Noise2NoiseTrainer(PytorchTrainer):
         if unet_input_domain == 'image':
             assert reconstruction_type is not None and reconstruction_type in ['fbp', 'mlem'], "Currently only 'fbp' and 'mlem' reconstructions are supported."
         assert n_splits > 1, "n_splits must be greater than 1 for noise2noise training."
-        self.physics = physics
-        self.unet_config = unet_config
+        self.model_class_name = model_class_name
+        self.nn_config = nn_config
         self.unet_input_domain = unet_input_domain
         self.unet_output_domain = unet_output_domain
         self.model_name = f'Noise2Noise_2DPET_{unet_input_domain}_to_{unet_output_domain}'
@@ -115,12 +115,9 @@ class Noise2NoiseTrainer(PytorchTrainer):
         else:
             self.model_name += '_N2N'
         self.reconstruction_type = reconstruction_type
-        unet_config.update({'reconstruction_type': self.reconstruction_type})
         self.reconstruction_config = reconstruction_config
-        unet_config.update({'reconstruction_config': self.reconstruction_config})
         #
         self.n_splits = n_splits # n_splits means n * (n - 1) pairs will be used for noise2noise training
-        unet_config.update({'n_splits': n_splits})
         #
         if (self.unet_output_domain == self.unet_input_domain == 'image') or (self.supervised and unet_output_domain == 'image'):
             assert objective_type.lower() in ['mse', 'l1', 'hubert'], "When both input and output domain is 'image', only 'MSE' is supported."
@@ -291,13 +288,10 @@ class Noise2NoiseTrainer(PytorchTrainer):
 
     def create_model(self):
         # model expects channel-first inputs: we'll add channel dimension when calling
-        model = UNet(
-            n_channels=1,
-            n_classes=1,
-            bilinear=True,
+        ModelInheritanceHandler.set_parent(self.model_class_name)
+        model = Noise2NoisePETModel(
             input_domain=self.unet_input_domain,
             output_domain=self.unet_output_domain,
-            physics=self.physics,
             geometry={
                 'n_angles': self.n_angles,
                 'scanner_radius_mm': self.scanner_radius,
@@ -306,7 +300,9 @@ class Noise2NoiseTrainer(PytorchTrainer):
              },
              image_size=self.image_size,
              sinogram_size=self.sinogram_size,
-            **self.unet_config
+             reconstruction_config=self.reconstruction_config,
+             reconstruction_type=self.reconstruction_type,
+             nn_config=self.nn_config
         )
         model = model.to(self.device)
         #

@@ -32,17 +32,34 @@ if __name__ == "__main__":
             },
             optimizer_config={
                 'lr': 5e-4,
+                # 'weight_decay': 5e-3,
             },
-            unet_config = {
-                'conv_layer_type': 'Conv2d',
-                'n_levels': 4,
+            model_class_name='DRUNet',
+            nn_config = {
+                'n_channels': 1,
                 'global_conv': 32,
-                'residual_conv': True,
-                'physics_mode': 'pre_inverse',
-                'residual': False,
-                'out_act': 'softplus',
-                'init': 'none'
+                'downsample_mode': 'maxpool',
+                'upsample_mode': 'bilinear',
+                'conv_layer_type': 'Conv2d',
+                'r_res_conv': 2,
+                'use_noise_level_map': False,
+                'activation': 'relu'
             },
+            # model_class_name='UNet',
+            # nn_config={
+            #      'n_channels':1,
+            #      'n_classes':1,
+            #      'global_conv':32,
+            #      'n_levels':4,
+            #      'bilinear':True,
+            #      'conv_layer_type':'Conv2d',
+            #      'out_act':'relu', # Softplus is a common choice for the output activation in image-to-image translation tasks as it allows for positive outputs while avoiding the hard saturation of sigmoid. However, this can be changed to 'sigmoid' or None if needed.
+            #      'residual':True,
+            #      'residual_conv':False,
+            #      'init':'none',
+            #      'dropout': 0.0,
+            #      'norm':None,
+            # },
             unet_input_domain=unet_input_domain,
             unet_output_domain=unet_output_domain,
             supervised=supervised,
