@@ -629,7 +629,7 @@ class Noise2NoiseTrainer(PytorchTrainer):
                 if self.unet_input_domain == 'image':
                     x = [self.model.reconstruction(s, scale=scale, corr=corr, attenuation_map=att, mode=self.reconstruction_type, **self.reconstruction_config) for s in splitted_prompts]
                 else:
-                    x = splitted_prompts
+                    x = None
 
                 if self.unet_output_domain == 'photon':
                     target = target / self.n_splits # In photon domain, we divide poisson parameter accordingly
@@ -644,11 +644,14 @@ class Noise2NoiseTrainer(PytorchTrainer):
 
                 # Denoise and compute loss on all pairs
                 for (i, j) in pairwise_permutations:
-                    x_i = x[i]
-                    x_j = x[j]
+                    if x is None:
+                        x_i, x_j = None, None
+                    else:
+                        x_i, x_j = x[i], x[j]
                     # Inference and loss computation for pair (i, j)
                     output_i = self.model(
-                        x_i,
+                        x=x_i,
+                        y=splitted_prompts[i],
                         scale=scale,
                         mask=mask,
                         attenuation_map=att,
@@ -660,7 +663,10 @@ class Noise2NoiseTrainer(PytorchTrainer):
                         else:
                             loss_target = target
                     else:
-                        loss_target = x_j
+                        if x is not None:
+                            loss_target = x_j
+                        else:
+                            loss_target = splitted_prompts[j]
                     #
                     loss_ij = self.compute_loss(output=output_i, target=loss_target, attenuation_map=att, corr=corr, scale=scale, mask_im=mask_im, mask_sino=mask_sino)
                     # We only update n2n_ metrics and loss here
@@ -693,7 +699,7 @@ class Noise2NoiseTrainer(PytorchTrainer):
                 # log batch loss
                 mlflow.log_metric(f'batch_loss_{self.objective_type.lower()}', loss.item(), step=epoch * len(self.loader_train) + batch_idx)
                 #
-                m_dict_train = {metric.name: metric.result() for metric in self.metrics if metric.name.startswith('n2n_') or metric.name.startswith('loss_')}
+                m_dict_train = {metric.name: f"{metric.result():.4f}" for metric in self.metrics if metric.name.startswith('n2n_') or metric.name.startswith('loss_')}
                 print(f'Epoch [{epoch+1}/{self.n_epochs}], Train,  Step [{batch_idx+1}/{len(self.loader_train)}]', f"Metrics : {m_dict_train}")
 
             for metric in self.metrics:
@@ -727,14 +733,16 @@ class Noise2NoiseTrainer(PytorchTrainer):
                         corr = corr.to(self.device).float()
                         #
                         # Split data with multinomial statistics. This is done to match training data distribution
-                        x = self.model.split_prompt(prompt, mode='multinomial')
+                        y_splits = self.model.split_prompt(prompt, mode='multinomial')
                         #
                         scale = scale / self.n_splits
                         corr = corr / self.n_splits
 
                         # Apply reconstruction if needed
                         if self.unet_input_domain == 'image':
-                            x = [self.model.reconstruction(s, scale=scale, corr=corr, attenuation_map=att, mode=self.reconstruction_type, **self.reconstruction_config) for s in x]
+                            x = [self.model.reconstruction(s, scale=scale, corr=corr, attenuation_map=att, mode=self.reconstruction_type, **self.reconstruction_config) for s in y_splits]
+                        else:
+                            x = None
 
                         # Create mask
                         mask_im = (target > 0).float()
@@ -743,42 +751,39 @@ class Noise2NoiseTrainer(PytorchTrainer):
                             mask = mask_im
                         else:
                             mask = mask_sino
-
-                        # Denoise
-                        if self.supervised:
-                            splits_infered = self.model(
-                                torch.cat(x, dim=0), # concatenate splits along batch dimension for efficient inference
+                        #
+                        splits_infered = [
+                            self.model(
+                                y=y_splits[i],
+                                x=x[i] if x is not None else None,
                                 scale=scale,
                                 attenuation_map=att,
                                 corr=corr,
                                 mask=mask
-                            )
-                            splits_infered = splits_infered.chunk(1, dim=0) # dummy chunk to have same format as unsupervised case for easier code reuse
-                        else:
-                            splits_infered = self.model(
-                                torch.cat(x, dim=0), # concatenate splits along batch dimension for efficient inference
-                                scale=torch.cat(self.n_splits * [scale, ], dim=0),
-                                attenuation_map=torch.cat(self.n_splits * [att, ], dim=0),
-                                corr=torch.cat(self.n_splits * [corr, ], dim=0)
-                            )
-                            splits_infered = torch.chunk(splits_infered, self.n_splits, dim=0)  # list of (B, C, H, W)
+                            ) for i in range(self.n_splits)
+                        ]
                         #
                         if self.unet_output_domain == 'photon' and not self.supervised:
                             target = target / self.n_splits # In photon domain, we divide poisson parameter accordingly
                         else:
                             target = target
-
-
                         #
                         val_split_losses = []
                         for (i, j) in pairwise_permutations:
-                            x_i = x[i]
-                            x_j = x[j]
+                            if x is not None:
+                                x_i = x[i]
+                                x_j = x[j]
+                            else:
+                                x_i, x_j = None, None
                             # inference on i
                             out_i = splits_infered[i]
                             # Loss computation for pair (i, j)
                             if not self.supervised:
-                                val_loss = self.compute_loss(output=out_i, target=x_j, attenuation_map=att, corr=corr, scale=scale, mask_im=mask_im, mask_sino=mask_sino)
+                                if x is not None:
+                                    loss_target = x_j
+                                else:
+                                    loss_target = y_splits[j]
+                                val_loss = self.compute_loss(output=out_i, target=loss_target, attenuation_map=att, corr=corr, scale=scale, mask_im=mask_im, mask_sino=mask_sino)
                             else:
                                 loss_target = nfpt / self.n_splits if self.unet_input_domain == 'photon' and self.unet_output_domain == 'image' else target
                                 val_loss = self.compute_loss(output=out_i, target=loss_target, attenuation_map=att, corr=corr, scale=scale, mask_im=mask_im, mask_sino=mask_sino)
@@ -833,7 +838,7 @@ class Noise2NoiseTrainer(PytorchTrainer):
                 corr = corr.to(self.device).float().unsqueeze(0) # add batch dimension
 
                 # Denoised reconstruction from prompt
-                recon_noise2noise = self.model.forward_inference(prompt, scale=scale, corr=corr, attenuation_map=att, monte_carlo_steps=1, split=True, mask=None) # (B, C, H, W)
+                recon_noise2noise = self.model.forward_inference(prompt, scale=scale, corr=corr, attenuation_map=att, monte_carlo_steps=1, split=True, mask=(gth > 0)) # (B, C, H, W)
                 recon_noise2noise = recon_noise2noise.to('cpu').squeeze().detach().numpy().astype(np.float32)
                 gth = gth.to('cpu').float().squeeze().detach().numpy().astype(np.float32)
                 mask = gth > 0
