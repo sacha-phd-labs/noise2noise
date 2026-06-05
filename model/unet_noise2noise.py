@@ -54,7 +54,7 @@ class Noise2NoisePETModel(nn.Module):
     """
 
     def __init__(self,
-                 input_domain='image', output_domain='image',
+                 domain='image',
                  sinogram_size=(300, 300),
                  geometry={},
                  reconstruction_type='fbp',
@@ -68,8 +68,7 @@ class Noise2NoisePETModel(nn.Module):
             # Store the name of the custom parent class
             self._parent_class_name = ModelInheritanceHandler.parent.__name__
         #
-        self.input_domain = input_domain
-        self.output_domain = output_domain
+        self.domain = domain
         #
         self.n_angles = geometry.get('n_angles', 300)
         self.scanner_radius = geometry.get('scanner_radius_mm', 300)
@@ -246,7 +245,7 @@ class Noise2NoisePETModel(nn.Module):
             splits_denoised = torch.chunk(splits_denoised, self.n_splits, dim=0)  # list of (B, C, H, W)
 
             # Apply reconstruction if needed and average outputs
-            if self.unet_output_domain == 'photon':
+            if self.domain == 'photon':
                 output = [ self.reconstruction(split_denoised_, scale=scale, corr=corr, attenuation_map=attenuation_map, mode=self.reconstruction_type, **self.reconstruction_config) for split_denoised_ in splits_denoised ]  # (B, C, H, W)
             else:
                 splits_denoised = torch.stack(splits_denoised, dim=0)  # (n_splits, B, C, H, W)
@@ -262,32 +261,49 @@ class Noise2NoisePETModel(nn.Module):
         return outputs
     
 
-    def forward(self, x, scale=None, mask=None, corr=None, attenuation_map=None):
+    def forward(self, y, x=None, scale=None, mask=None, corr=None, attenuation_map=None):
         """
-        :param x: either a batch of sinograms (B, C, H, W) if input_domain is 'photon', or a batch of images if input_domain is 'image'.
-        :param x_domain: 'photon' or 'image', only needed if the domain of x is different from self.input_domain and we need to apply the reconstruction operator. If None, it will be inferred from the shape of x and self.input_domain.
+        :param y: (B, C, H, W) input sinogram tensor
+        :param x: (B, C, H, W) input image tensor to be used when domain is 'image'. If None, reconstruction will be applied to y to get x.
+        :param corr: (B, C, H, W) correction sinogram tensor to be subtracted from input sinogram before reconstruction. This can be used to remove estimated scatter or randoms from the input. If None, no correction will be applied.
         :param attenuation_map: (B, C, H, W) attenuation map to be used for the reconstruction operator. If None, no attenuation will be applied.
         :param scale: (B,) scale factor to be applied to sinogram before reconstruction. This is typically acquisition_time * np.log(2) / half_life, but can be set to 1 if the input sinogram has already been scaled accordingly. If None, no scaling will be applied.
         """
 
-        if self.input_domain == 'photon' and self.output_domain == 'image':
-            x = self.reconstruction(x, scale=scale, corr=corr, attenuation_map=attenuation_map, mode=self.reconstruction_type, **self.reconstruction_config)  # (B, C, H, W)
+        if self.domain == 'image' and x is None:
+            x = self.reconstruction(y, scale=scale, corr=corr, attenuation_map=attenuation_map, mode=self.reconstruction_type, **self.reconstruction_config)  # (B, C, H, W)
+        elif self.domain == 'photon':
+            x = None
         #
 
-        if self.unet_output_domain == self.unet_input_domain == 'photon':
-            x = torch.log1p(x)  # log(1+x) is a variance-stabilizing transform for Poisson data that can be more stable than Anscombe for low counts
+        if self.domain == 'photon':
+            y = torch.log1p(y)  # log(1+x) is a variance-stabilizing transform for Poisson data that can be more stable than Anscombe for low counts
 
-        output = super().forward(x)
+        if x is not None:
 
-        if self.unet_output_domain == 'photon' and self.unet_input_domain == 'photon':
-            output = torch.expm1(output)  # inverse of log1p
+            if hasattr(self, 'use_noise_level_map') and self.use_noise_level_map and self.domain == 'image':
+                pet_system_operator = self.get_pet_system_operator()
+                inverse_variance_map = pet_system_operator.forward_adjoint(y, attenuation_map=attenuation_map, scale=scale)
+                # Compute sensitivity map as backprojection of ones
+                sensitivity_map = pet_system_operator.forward_adjoint(torch.ones_like(y), attenuation_map=attenuation_map, scale=scale)
+                inverse_variance_map = inverse_variance_map/sensitivity_map
+                x = torch.cat([x, inverse_variance_map], dim=1)  # (B, C+2, H, W)
+ 
+            output = super().forward(x)
+
+        else:
+            if self.domain == 'photon':
+                y = torch.log1p(y)
+            output = super().forward(y)
+            if self.domain == 'photon':
+                output = torch.expm1(output)  # inverse of log1p
         # 
         # Anscombe inverse transform to convert back to original Poisson scale
         if hasattr(self, 'loss_type') and self.loss_type == 'mse_anscombe' and not self.training:
             output = ( (output / 2) ** 2 ) - (3 / 8)
             output = torch.clamp(output, min=0.0)
         #
-        if self.output_domain == 'image' and (output.shape[-2], output.shape[-1]) != self.image_size:
+        if self.domain == 'image' and (output.shape[-2], output.shape[-1]) != self.image_size:
             output = torch.nn.functional.interpolate(output, size=self.image_size, mode='bilinear', align_corners=False)
         #
         if mask is not None:

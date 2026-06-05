@@ -69,16 +69,15 @@ class Noise2NoiseTrainer(PytorchTrainer):
                 'n_levels': 4,
                 'global_conv': 32,
             },
-            unet_input_domain='photon',
-            unet_output_domain='photon',
+            nn_domain='image',
             supervised=False,
             reconstruction_type='fbp',
             reconstruction_config={},
             n_splits=2,
             num_workers=0,
             objective_type='poisson',
+            projection_consistency=False, # Either to project images before computing the loss.
             consensus_loss=False, # Either to use consensus loss from 10.48550/arXiv.1906.03639 or not.
-            image_consistency=0.0, # balance for image consistency loss, which enforces the average of split outputs to be close to the reconstruction from the prompt.
             prompt_consistency=0.0, # balance for prompt consistency loss, which enforces the projected output to be close to the prompt.
             prior=None, # either 'TV' for total variation or 'Gibbs' for Gibbs prior, or None for no prior.
             prior_weight=0.0, # balance for the prior loss
@@ -96,20 +95,14 @@ class Noise2NoiseTrainer(PytorchTrainer):
         self.supervised = supervised
         self.image_size = simulator_config.get('image_size', (160,160))
         # Validate task parameters
-        assert unet_input_domain in ['photon', 'image'], "unet_input_domain must be either 'photon' or 'image'."
-        assert unet_output_domain in ['photon', 'image'], "unet_output_domain must be either 'photon' or 'image'."
-        if unet_input_domain not in ['photon', 'image'] or unet_output_domain not in ['photon', 'image']:
-            raise ValueError("unet_input_domain and unet_output_domain must be either 'photon' or 'image'.")
-        if unet_input_domain != unet_output_domain:
-            assert unet_input_domain == 'photon' and unet_output_domain == 'image', "Only photon to image domain conversion is supported."
-        if unet_input_domain == 'image':
+        assert nn_domain in ['photon', 'image'], "nn_domain must be either 'photon' or 'image'."
+        if nn_domain == 'image':
             assert reconstruction_type is not None and reconstruction_type in ['fbp', 'mlem'], "Currently only 'fbp' and 'mlem' reconstructions are supported."
         assert n_splits > 1, "n_splits must be greater than 1 for noise2noise training."
         self.model_class_name = model_class_name
         self.nn_config = nn_config
-        self.unet_input_domain = unet_input_domain
-        self.unet_output_domain = unet_output_domain
-        self.model_name = f'Noise2Noise_2DPET_{unet_input_domain}_to_{unet_output_domain}'
+        self.nn_domain = nn_domain
+        self.model_name = f'Noise2Noise_2DPET_{nn_domain}'
         if self.supervised:
             self.model_name += '_supervised'
         else:
@@ -119,21 +112,16 @@ class Noise2NoiseTrainer(PytorchTrainer):
         #
         self.n_splits = n_splits # n_splits means n * (n - 1) pairs will be used for noise2noise training
         #
-        if (self.unet_output_domain == self.unet_input_domain == 'image') or (self.supervised and unet_output_domain == 'image'):
-            assert objective_type.lower() in ['mse', 'l1', 'hubert'], "When both input and output domain is 'image', only 'MSE' is supported."
-        else:
-            assert objective_type.lower() in ['poisson', 'mse', 'mse_anscombe', 'kl_divergence'], "When output domain is 'photon', only 'Poisson' and 'MSE' are supported."
         self.objective_type = objective_type
         self.consensus_loss = consensus_loss
         if self.consensus_loss:
             assert 'mse' in self.objective_type.lower(), "Currently consensus loss is only derived from MSE loss."
-            if self.unet_output_domain == 'photon':
+            if self.nn_domain == 'photon':
                 assert self.n_splits == 2, "Currently consensus loss is only implemented for n_splits=2 in photon domain."
-        
-        self.image_consistency = image_consistency
-        if self.image_consistency > 0:
-            assert not self.supervised, "Image consistency loss is only applicable for self-supervised noise2noise training."
-            assert self.unet_output_domain == 'image', "Image consistency loss can only be applied when output domain is image."
+
+        if self.nn_domain == 'photon':
+            projection_consistency = False
+        self.projection_consistency = projection_consistency
 
         self.prompt_consistency = prompt_consistency
 
@@ -157,9 +145,7 @@ class Noise2NoiseTrainer(PytorchTrainer):
         #
         super(Noise2NoiseTrainer, self).__init__()
         #
-        if (self.unet_input_domain == 'photon' and self.unet_output_domain == 'image') or \
-            (self.unet_input_domain == 'image' and self.image_consistency > 0) or \
-            (self.prompt_consistency > 0):
+        if self.projection_consistency or (self.nn_domain == 'image' and self.prompt_consistency > 0):
             self.get_pet_system_operator() # initialize forward operator for potential use in photon to image domain conversion and measurement consistency loss
 
     def get_metrics(self, metrics=[]):
@@ -172,13 +158,12 @@ class Noise2NoiseTrainer(PytorchTrainer):
             [ 'PSNR', { 'name': 'val_prompt_im_psnr'} ],
             [ 'SSIM', { 'name': 'val_prompt_im_ssim'} ],
             [ 'PSNR', { 'name': 'n2n_psnr'} ],
-            # [ 'LPIPS', { 'name': 'im_lpips'} ],
         ])
-        if self.unet_output_domain == 'image':
+        if self.nn_domain == 'image':
             metrics.append( [ 'SSIM', { 'name': 'n2n_ssim'} ] )
         for m in metrics:
             if m[0] == 'SSIM' or m[1] == 'PSNR':
-                if self.unet_output_domain == 'image':
+                if self.nn_domain == 'image':
                     m[1]['bkg_val'] = 0.0 
                 if 'im_' in m[1]['name']:
                     m[1]['bkg_val'] = 0.0
@@ -290,8 +275,7 @@ class Noise2NoiseTrainer(PytorchTrainer):
         # model expects channel-first inputs: we'll add channel dimension when calling
         ModelInheritanceHandler.set_parent(self.model_class_name)
         model = Noise2NoisePETModel(
-            input_domain=self.unet_input_domain,
-            output_domain=self.unet_output_domain,
+            domain=self.nn_domain,
             geometry={
                 'n_angles': self.n_angles,
                 'scanner_radius_mm': self.scanner_radius,
@@ -306,8 +290,7 @@ class Noise2NoiseTrainer(PytorchTrainer):
         )
         model = model.to(self.device)
         #
-        model.unet_input_domain = self.unet_input_domain
-        model.unet_output_domain = self.unet_output_domain
+        model.domain = self.nn_domain
         #
         return model
 
@@ -346,38 +329,37 @@ class Noise2NoiseTrainer(PytorchTrainer):
         We compute the reconstruction from the noise-free sinogram (nfpt) only. This metric cannot be beaten by denoising.
         We compute the reconstruction from the prompt sinogram only. This metric must be beaten by denoising.
         """
-        if self.unet_output_domain == self.unet_input_domain:
-            self.model.eval()
-            with torch.no_grad():
-                for batch_idx, (path, prompt, nfpt, gth, att, att_sino, corr, scale) in enumerate(self.loader_val):
+        self.model.eval()
+        with torch.no_grad():
+            for batch_idx, (path, prompt, nfpt, gth, att, att_sino, corr, scale) in enumerate(self.loader_val):
 
-                    print(f'Computing reference metrics, batch {batch_idx+1}/{len(self.loader_val)} ...')
+                print(f'Computing reference metrics, batch {batch_idx+1}/{len(self.loader_val)} ...')
 
-                    # move data to device
-                    prompt = prompt.to(self.device).float()
-                    nfpt = nfpt.to(self.device).float()
-                    gth = gth.to(self.device).float()
-                    scale = scale.to(self.device).float()
-                    corr = corr.to(self.device).float()
+                # move data to device
+                prompt = prompt.to(self.device).float()
+                nfpt = nfpt.to(self.device).float()
+                gth = gth.to(self.device).float()
+                scale = scale.to(self.device).float()
+                corr = corr.to(self.device).float()
 
-                    # reconstruction from noise-free sinogram
-                    recon_nfpt = self.model.reconstruction(nfpt, scale=scale, corr=corr, attenuation_map=att, mode=self.reconstruction_type, **self.reconstruction_config)
-                    # update im_ metrics for reference
-                    metrics_to_update = [ m.name for m in self.metrics if 'nfpt' in m.name ]
-                    self.update_metrics(normalize_batch(gth), normalize_batch(recon_nfpt), metric_names=metrics_to_update)
+                # reconstruction from noise-free sinogram
+                recon_nfpt = self.model.reconstruction(nfpt, scale=scale, corr=corr, attenuation_map=att, mode=self.reconstruction_type, **self.reconstruction_config)
+                # update im_ metrics for reference
+                metrics_to_update = [ m.name for m in self.metrics if 'nfpt' in m.name ]
+                self.update_metrics(normalize_batch(gth), normalize_batch(recon_nfpt), metric_names=metrics_to_update)
 
-                    # reconstruction from prompt sinogram
-                    recon_prompt = self.model.reconstruction(prompt, scale=scale, corr=corr, attenuation_map=att, mode=self.reconstruction_type, **self.reconstruction_config)
-                    # update im_ metrics for reference
-                    metrics_to_update = [ m.name for m in self.metrics if 'prompt' in m.name ]
-                    self.update_metrics(normalize_batch(gth), normalize_batch(recon_prompt), metric_names=metrics_to_update)
+                # reconstruction from prompt sinogram
+                recon_prompt = self.model.reconstruction(prompt, scale=scale, corr=corr, attenuation_map=att, mode=self.reconstruction_type, **self.reconstruction_config)
+                # update im_ metrics for reference
+                metrics_to_update = [ m.name for m in self.metrics if 'prompt' in m.name ]
+                self.update_metrics(normalize_batch(gth), normalize_batch(recon_prompt), metric_names=metrics_to_update)
 
-                print('Reference metrics on validation set before training:')
-                for metric in self.metrics:
-                    if 'nfpt' in metric.name or 'prompt' in metric.name:
-                        print(f'{metric.name}: {metric.result():.4f}')
-                        mlflow.log_metric(metric.name, metric.result())
-                        metric.reset_states()
+            print('Reference metrics on validation set before training:')
+            for metric in self.metrics:
+                if 'nfpt' in metric.name or 'prompt' in metric.name:
+                    print(f'{metric.name}: {metric.result():.4f}')
+                    mlflow.log_metric(metric.name, metric.result())
+                    metric.reset_states()
 
     def pet_system_operator(self, image, attenuation_map=None, scale=None, forward_operator_type='radon'):
         """
@@ -409,12 +391,14 @@ class Noise2NoiseTrainer(PytorchTrainer):
         """
         if self.objective_type.lower() == 'poisson':
             loss = self.objective(output, target)
-        elif self.objective_type.lower() == 'kl_divergence':
-            loss = self.objective(F.log_softmax(output + 1e-8, dim=-1), F.log_softmax(target + 1e-8, dim=-1))
         elif self.objective_type.lower() == 'mse':
             eps = 1.0
             weight = 1.0 / (target + eps)
             loss = (weight * (output - target) ** 2).mean()
+        elif self.objective_type.lower() == 'l1':
+            eps = 1.0
+            weight = 1.0 / (target + eps)
+            loss = (weight * torch.abs(output - target)).mean()
         elif self.objective_type.lower() == 'mse_anscombe':
             if not self.model.training:
                 output = anscombe(output) # At inference time, rescale back to Anscombe domain
@@ -427,22 +411,22 @@ class Noise2NoiseTrainer(PytorchTrainer):
     def compute_loss(self, output, target, attenuation_map=None, scale=None, corr=None, mask_im=None, mask_sino=None):
 
         if mask_im is not None:
-            if self.unet_output_domain == 'image':
+            if self.nn_domain == 'image':
                 output = output * mask_im
             else:
                 output = output * mask_sino
         if mask_sino is not None:
             corr = corr * mask_sino
-            if self.unet_input_domain == 'image':
+            if self.nn_domain == 'image' and not self.projection_consistency:
                 target = target * mask_im
             else:
                 target = target * mask_sino
 
-        if self.unet_input_domain == self.unet_output_domain == 'photon':
+        if self.nn_domain == 'photon':
             loss = self.compute_count_loss(output, target)
-        elif self.unet_input_domain == self.unet_output_domain == 'image':
+        elif self.nn_domain == 'image' and not self.projection_consistency:
             loss = self.objective(output, target)
-        elif self.unet_input_domain == 'photon' and self.unet_output_domain == 'image':
+        elif self.nn_domain == 'image' and self.projection_consistency:
             if attenuation_map is None:
                 print("Warning: No attenuation map provided for photon to image domain conversion. Assuming no attenuation for forward operator.")
 
@@ -460,7 +444,7 @@ class Noise2NoiseTrainer(PytorchTrainer):
     
     def compute_loss_addons(self, outputs, prompt, attenuation_map=None, scale=None, corr=None, mask_im=None, mask_sino=None):
         if mask_im is not None:
-            if self.unet_output_domain == 'image':
+            if self.nn_domain == 'image':
                 outputs = [output * mask_im for output in outputs]
             else:
                 outputs = [output * mask_sino for output in outputs]
@@ -476,11 +460,11 @@ class Noise2NoiseTrainer(PytorchTrainer):
                 output_i = outputs[i]
                 output_j = outputs[j]
                 #
-                if self.unet_output_domain == self.unet_input_domain == 'image':
+                if self.nn_domain == 'image' and not self.projection_consistency:
                     consensus_loss_ij = (1 / self.n_splits**2) * self.compute_loss(output_i, output_j)
-                elif self.unet_output_domain == self.unet_input_domain == 'photon':
+                elif self.nn_domain == 'photon':
                     consensus_loss_ij = (1 / self.n_splits**2) *self.compute_count_loss(output_i, output_j)
-                else:
+                elif self.nn_domain == 'image' and self.projection_consistency:
                     projected_i = self.pet_system_operator(
                         output_i,
                         attenuation_map=attenuation_map,
@@ -503,7 +487,7 @@ class Noise2NoiseTrainer(PytorchTrainer):
         #
         if self.prompt_consistency > 0:
 
-            if self.unet_input_domain == self.unet_output_domain == 'photon':
+            if self.nn_domain == 'photon':
 
                 if mask_sino is not None:
                     prompt = prompt * mask_sino
@@ -516,7 +500,7 @@ class Noise2NoiseTrainer(PytorchTrainer):
                 else:
                     loss_prompt_consistency = self.prompt_consistency * sum(self.compute_count_loss(z_, prompt / self.n_splits) for z_ in outputs)
 
-            elif self.unet_input_domain == self.unet_output_domain == 'image':
+            elif self.nn_domain == 'image' and not self.projection_consistency:
 
                 if mask_im is not None:
                     outputs = [output * mask_im for output in outputs]
@@ -546,7 +530,7 @@ class Noise2NoiseTrainer(PytorchTrainer):
 
                     loss_prompt_consistency = self.prompt_consistency * sum(self.compute_count_loss(z_ + corr, prompt) for z_ in z_projected)
 
-            elif self.unet_input_domain == 'photon' and self.unet_output_domain == 'image':
+            elif self.nn_domain == 'image' and self.projection_consistency:
 
                 if mask_im is not None:
                     outputs = [output * mask_im for output in outputs]
@@ -594,8 +578,8 @@ class Noise2NoiseTrainer(PytorchTrainer):
             self.model.train()
             for batch_idx, (path, prompt, nfpt, gth, att, att_sino, corr, scale) in enumerate(self.loader_train):
 
-                # Set target for taské
-                if self.unet_output_domain == 'image':
+                # Set target for task
+                if self.nn_domain == 'image':
                     target = gth
                 else:
                     target = nfpt
@@ -622,18 +606,18 @@ class Noise2NoiseTrainer(PytorchTrainer):
                 pairwise_permutations = list(itertools.permutations(range(self.n_splits), 2))
                 #
                 # Apply reconstruction if needed
-                if self.unet_input_domain == 'image':
-                    x = [self.model.reconstruction(s, scale=scale, corr=corr, attenuation_map=att, mode=self.reconstruction_type, **self.reconstruction_config) for s in splitted_prompts]
+                if self.nn_domain == 'photon':
+                    x =None
                 else:
-                    x = None
+                    x = [self.model.reconstruction(s, scale=scale, corr=corr, attenuation_map=att, mode=self.reconstruction_type, **self.reconstruction_config) for s in splitted_prompts]
 
-                if self.unet_output_domain == 'photon':
+                if self.nn_domain == 'photon':
                     target = target / self.n_splits # In photon domain, we divide poisson parameter accordingly
 
                 # Get mask for loss computation
                 mask_im = (target > 0).float()
                 mask_sino = (att_sino > 1.02).float()
-                if self.unet_output_domain == 'image':
+                if self.nn_domain == 'image':
                     mask = mask_im
                 else:
                     mask = mask_sino
@@ -654,12 +638,12 @@ class Noise2NoiseTrainer(PytorchTrainer):
                         corr=corr
                     )
                     if self.supervised:
-                        if self.unet_input_domain == 'photon' and self.unet_output_domain == 'image':
+                        if self.nn_domain == 'image' and self.projection_consistency:
                             loss_target = nfpt / self.n_splits
                         else:
                             loss_target = target
                     else:
-                        if x is not None:
+                        if self.nn_domain and not self.projection_consistency:
                             loss_target = x_j
                         else:
                             loss_target = splitted_prompts[j]
@@ -713,7 +697,7 @@ class Noise2NoiseTrainer(PytorchTrainer):
                     for batch_idx, (_, prompt, nfpt, gth, att, att_sino, corr, scale) in enumerate(self.loader_val):
 
                         # set target for task
-                        if self.unet_output_domain == 'image':
+                        if self.nn_domain == 'image':
                             target = gth
                         else:
                             target = nfpt
@@ -735,7 +719,7 @@ class Noise2NoiseTrainer(PytorchTrainer):
                         corr = corr / self.n_splits
 
                         # Apply reconstruction if needed
-                        if self.unet_input_domain == 'image':
+                        if self.nn_domain == 'image':
                             x = [self.model.reconstruction(s, scale=scale, corr=corr, attenuation_map=att, mode=self.reconstruction_type, **self.reconstruction_config) for s in y_splits]
                         else:
                             x = None
@@ -743,7 +727,7 @@ class Noise2NoiseTrainer(PytorchTrainer):
                         # Create mask
                         mask_im = (target > 0).float()
                         mask_sino = (att_sino > 1.02).float()
-                        if self.unet_output_domain == 'image':
+                        if self.nn_domain == 'image':
                             mask = mask_im
                         else:
                             mask = mask_sino
@@ -759,7 +743,7 @@ class Noise2NoiseTrainer(PytorchTrainer):
                             ) for i in range(self.n_splits)
                         ]
                         #
-                        if self.unet_output_domain == 'photon' and not self.supervised:
+                        if self.nn_domain == 'photon' and not self.supervised:
                             target = target / self.n_splits # In photon domain, we divide poisson parameter accordingly
                         else:
                             target = target
@@ -775,13 +759,13 @@ class Noise2NoiseTrainer(PytorchTrainer):
                             out_i = splits_infered[i]
                             # Loss computation for pair (i, j)
                             if not self.supervised:
-                                if x is not None:
+                                if self.nn_domain == 'image' and not self.projection_consistency:
                                     loss_target = x_j
                                 else:
                                     loss_target = y_splits[j]
                                 val_loss = self.compute_loss(output=out_i, target=loss_target, attenuation_map=att, corr=corr, scale=scale, mask_im=mask_im, mask_sino=mask_sino)
                             else:
-                                loss_target = nfpt / self.n_splits if self.unet_input_domain == 'photon' and self.unet_output_domain == 'image' else target
+                                loss_target = nfpt / self.n_splits if (self.projection_consistency) else target
                                 val_loss = self.compute_loss(output=out_i, target=loss_target, attenuation_map=att, corr=corr, scale=scale, mask_im=mask_im, mask_sino=mask_sino)
                             val_split_losses.append(val_loss)
                             # Update n2n_ and loss metrics for validation
@@ -802,7 +786,7 @@ class Noise2NoiseTrainer(PytorchTrainer):
                         #
                         self.update_loss(val_loss)
                         # Apply reconstruction if needed and average outputs
-                        if self.unet_output_domain == 'photon':
+                        if self.nn_domain == 'photon':
                             output = self.model.reconstruction(*splits_infered, scale=scale.repeat(self.n_splits), corr=corr, attenuation_map=att, mode=self.reconstruction_type, **self.reconstruction_config) # (B, C, H, W)
                         else:
                             splits_infered = torch.stack(splits_infered, dim=0)  # (n_splits, B, C, H, W)

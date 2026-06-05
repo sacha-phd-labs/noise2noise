@@ -7,8 +7,8 @@ import torch
 
 if __name__ == "__main__":
 
-    unet_input_domain = 'photon'
-    unet_output_domain = 'image'
+    nn_domain = 'image'
+    projection_consistency = True
     supervised = False
 
     trainer = Noise2NoiseTrainer(
@@ -61,7 +61,7 @@ if __name__ == "__main__":
             #      'norm':None,
             # },
             unet_input_domain=unet_input_domain,
-            unet_output_domain=unet_output_domain,
+            projection_consistency=projection_consistency,
             supervised=supervised,
             reconstruction_type='fbp',
             reconstruction_config={},
@@ -78,7 +78,7 @@ if __name__ == "__main__":
     mlflow.set_tracking_uri(os.getenv('MLFLOW_TRACKING_URI'))
     #
     # create experiment if not exists
-    experiment_name = f"Noise2Noise_2DPET_{unet_input_domain}_to_{unet_output_domain}_v2"
+    experiment_name = f"Noise2Noise_2DPET_{nn_domain}_v4"
     experiment = mlflow.get_experiment_by_name(experiment_name)
     if experiment is None:
         mlflow.create_experiment(experiment_name)
