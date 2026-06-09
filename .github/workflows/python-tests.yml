@@ -48,7 +48,7 @@ jobs:
           --network mlflow-net \
           --restart unless-stopped \
           -d \
-          -p 2222:22 \
+          -p 2223:22 \
           -v /mlflow-sacha-phd-labs:/mlflow-sacha-phd-labs \
           --name sacha-phd-pytorch_parallelproj_tests \
           ghcr.io/sacha-phd-labs/pytorch_parallelproj:latest
