@@ -25,6 +25,7 @@ jobs:
         else
           echo "Container sacha-phd-mlflow is not running."
           exit 1
+        fi
 
     - name: Check pytorch_parallelproj
       run: |
@@ -33,6 +34,7 @@ jobs:
         else
           echo "Container sacha-phd-pytorch_parallelproj is not running."
           exit 1
+        fi
 
     - name: Test with pytest
       run: |
