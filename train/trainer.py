@@ -81,7 +81,8 @@ class Noise2NoiseTrainer(PytorchTrainer):
             prompt_consistency=0.0, # balance for prompt consistency loss, which enforces the projected output to be close to the prompt.
             prior=None, # either 'TV' for total variation or 'Gibbs' for Gibbs prior, or None for no prior.
             prior_weight=0.0, # balance for the prior loss
-            seed=42
+            seed=42,
+            register_model=True
         ):
         self.dest_path = dest_path
         self.dataset_train_size = dataset_train_size
@@ -147,6 +148,8 @@ class Noise2NoiseTrainer(PytorchTrainer):
         #
         if self.projection_consistency or (self.nn_domain == 'image' and self.prompt_consistency > 0):
             self.get_pet_system_operator() # initialize forward operator for potential use in photon to image domain conversion and measurement consistency loss
+        #
+        self.register_model = register_model
 
     def get_metrics(self, metrics=[]):
 
@@ -219,7 +222,6 @@ class Noise2NoiseTrainer(PytorchTrainer):
         self.gaussian_PSF = self.dataset_train.sinogram_simulator.gaussian_PSF
         self.n_angles = self.dataset_train.sinogram_simulator.num_angles
         #
-        self.sinogram_size = tuple(self.dataset_train[0][1].shape[-2:]) # (H, W) of the sinogram, needed for UNet input size
         self.dataset_val_seed = int(1e5) # Seed is fixed to have consistent validation sets. Changing image size or voxel size will give different results.
         if 'acquisition_time' in self.simulator_config:
             self.simulator_config.pop('acquisition_time') # ensure acquisition time is same as training set
@@ -283,7 +285,6 @@ class Noise2NoiseTrainer(PytorchTrainer):
                 'voxel_size_mm': self.voxel_size_mm
              },
              image_size=self.image_size,
-             sinogram_size=self.sinogram_size,
              reconstruction_config=self.reconstruction_config,
              reconstruction_type=self.reconstruction_type,
              nn_config=self.nn_config
@@ -789,7 +790,9 @@ class Noise2NoiseTrainer(PytorchTrainer):
                         self.update_loss(val_loss)
                         # Apply reconstruction if needed and average outputs
                         if self.nn_domain == 'photon':
-                            output = self.model.reconstruction(*splits_infered, scale=scale.repeat(self.n_splits), corr=corr, attenuation_map=att, mode=self.reconstruction_type, **self.reconstruction_config) # (B, C, H, W)
+                            output = [ self.model.reconstruction(s, scale=scale, corr=corr, attenuation_map=att, mode=self.reconstruction_type, **self.reconstruction_config) for s in splits_infered ]  # (B, C, H, W)
+                            output = torch.stack(output, dim=0)  # (n_splits, B, C, H, W)
+                            output = torch.mean(output, dim=0)  # (B, C, H, W)
                         else:
                             splits_infered = torch.stack(splits_infered, dim=0)  # (n_splits, B, C, H, W)
                             output = torch.mean(splits_infered, dim=0)  # (B, C, H, W)
@@ -914,7 +917,11 @@ class Noise2NoiseTrainer(PytorchTrainer):
             torch.cuda.empty_cache()
 
         # log final model
-        mlflow.pytorch.log_model(self.model, artifact_path="final_model", registered_model_name=self.model_name)
+        if self.register_model:
+            registered_model_name =self.model_name
+        else:
+            registered_model_name = None
+        mlflow.pytorch.log_model(self.model, artifact_path="final_model", registered_model_name=registered_model_name)
 
         # # log final best models
         # for metric_name in monitored_metrics:

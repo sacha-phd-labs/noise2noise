@@ -55,7 +55,6 @@ class Noise2NoisePETModel(nn.Module):
 
     def __init__(self,
                  domain='image',
-                 sinogram_size=(300, 300),
                  geometry={},
                  reconstruction_type='fbp',
                  reconstruction_config={},
@@ -73,11 +72,10 @@ class Noise2NoisePETModel(nn.Module):
         self.n_angles = geometry.get('n_angles', 300)
         self.scanner_radius = geometry.get('scanner_radius_mm', 300)
         self.gaussian_PSF = geometry.get('gaussian_PSF_fwhm_mm', 4.0)
-        self.voxel_size_mm = geometry.get('voxel_size_mm', 2.0)
+        self.voxel_size_mm = geometry.get('voxel_size_mm', (2.0, 2.0))
         #
         #
         self.image_size = image_size
-        self.sinogram_size = sinogram_size
         self.n_splits = n_splits
         self.reconstruction_type = reconstruction_type
         self.reconstruction_config = reconstruction_config
@@ -107,13 +105,18 @@ class Noise2NoisePETModel(nn.Module):
             geometry = {
                 'num_angles':self.n_angles,
                 'scanner_radius_mm':self.scanner_radius,
-                'voxel_size_mm':self.voxel_size_mm
+                'voxel_size_mm':self.voxel_size_mm,
+                'img_shape': self.image_size,
             }
+            try:
+                device = next(self.parameters()).device
+            except StopIteration:
+                device = torch.device('cpu')
             pet_system_operator = PetSystem(
                 projector_type='parallelproj_parallel',
                 projector_config=geometry,
                 gaussian_PSF=self.gaussian_PSF,
-                device=next(self.parameters()).device
+                device=device
             )
 
         return pet_system_operator
@@ -221,6 +224,7 @@ class Noise2NoisePETModel(nn.Module):
         # Stack scale accordingly
         if split:
             scale = (scale / self.n_splits)#.repeat(self.n_splits) # Dividing the number of counts by n_splits is equivalent to dividing scale factor by n_splits
+            scale = scale.repeat(self.n_splits)  # (B * n_splits,)
 
         if attenuation_map is not None and split:
             attenuation_map = attenuation_map.repeat_interleave(repeats=self.n_splits, dim=0)  # (B * n_splits, 1, H, W)
@@ -239,17 +243,20 @@ class Noise2NoisePETModel(nn.Module):
             splitted_prompts = torch.cat(splitted_prompts, dim=0)  # (B * n_splits, C, H, W)
 
             # Denoise
-            splits_denoised = self.forward(y=splitted_prompts, scale=scale.repeat(self.n_splits), mask=mask, corr=corr, attenuation_map=attenuation_map)  # (B * n_splits, C, H, W)
-
-            # Expand splits to have (n_splits, B, C, H, W)
-            splits_denoised = torch.chunk(splits_denoised, self.n_splits, dim=0)  # list of (B, C, H, W)
+            splits_denoised = self.forward(y=splitted_prompts, scale=scale, corr=corr, attenuation_map=attenuation_map)  # (B * n_splits, C, H, W)
 
             # Apply reconstruction if needed and average outputs
             if self.domain == 'photon':
-                output = [ self.reconstruction(split_denoised_, scale=scale, corr=corr, attenuation_map=attenuation_map, mode=self.reconstruction_type, **self.reconstruction_config) for split_denoised_ in splits_denoised ]  # (B, C, H, W)
+                output = self.reconstruction(splits_denoised, scale=scale, corr=corr, attenuation_map=attenuation_map, mode=self.reconstruction_type, **self.reconstruction_config)
             else:
-                splits_denoised = torch.stack(splits_denoised, dim=0)  # (n_splits, B, C, H, W)
-                output = torch.mean(splits_denoised, dim=0)  # (B, C, H, W)
+                output = splits_denoised
+            
+            # Expand splits to have (n_splits, B, C, H, W)
+            output = torch.chunk(output, self.n_splits, dim=0)  # list of (B, C, H, W)
+            output = torch.stack(output, dim=0)  # (n_splits, B, C, H, W)
+            output = torch.mean(output, dim=0)  # (B, C, H, W)
+
+            output *= mask
 
             outputs += output
 
