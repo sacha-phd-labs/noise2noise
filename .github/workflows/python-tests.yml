@@ -26,7 +26,7 @@ jobs:
           --name sacha-phd-mlflow_tests \
           --restart unless-stopped \
           -p 5001:5001 \
-          -p 2250:5001 \
+          -p 2251:5001 \
           -v /mlflow-sacha-phd-labs:/mlflow-sacha-phd-labs \
           --network mlflow-net \
           ghcr.io/mlflow/mlflow:latest \
