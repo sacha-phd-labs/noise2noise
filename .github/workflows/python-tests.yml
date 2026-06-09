@@ -47,7 +47,7 @@ jobs:
           -e MLFLOW_TRACKING_URI="http://sacha-phd-mlflow_tests:5002" \
           --network mlflow-net \
           --restart unless-stopped \
-          -it \
+          -d \
           -p 2222:22 \
           -v /mlflow-sacha-phd-labs:/mlflow-sacha-phd-labs \
           --name sacha-phd-pytorch_parallelproj_tests \
@@ -60,13 +60,17 @@ jobs:
     - name: Clean up and stop container
       if: always()
       run: |
-        if [ "$(docker ps -q -f name=sacha-phd-pytorch_parallelproj_tests)" ]; then
-          docker exec sacha-phd-pytorch_parallelproj_tests bash -c "rm -rf -- * .[^.] .??*"
-          docker stop sacha-phd-pytorch_parallelproj_tests
+        if [ "$(docker ps -a -q -f name=sacha-phd-pytorch_parallelproj_tests)" ]; then
+          if [ "$(docker ps -q -f name=sacha-phd-pytorch_parallelproj_tests)" ]; then
+            docker exec sacha-phd-pytorch_parallelproj_tests bash -c "rm -rf -- * .[^.] .??*"
+            docker stop sacha-phd-pytorch_parallelproj_tests
+          fi
+          docker rm sacha-phd-pytorch_parallelproj_tests
         fi
-        docker rm sacha-phd-pytorch_parallelproj_tests
 
-        if [ "$(docker ps -q -f name=sacha-phd-mlflow_tests)" ]; then
-          docker stop sacha-phd-mlflow_tests
+        if [ "$(docker ps -a -q -f name=sacha-phd-mlflow_tests)" ]; then
+          if [ "$(docker ps -q -f name=sacha-phd-mlflow_tests)" ]; then
+            docker stop sacha-phd-mlflow_tests
+          fi
+          docker rm sacha-phd-mlflow_tests
         fi
-        docker rm sacha-phd-mlflow_tests
