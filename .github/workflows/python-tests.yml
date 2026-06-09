@@ -55,7 +55,7 @@ jobs:
 
     - name: Test with pytest
       run: |
-          docker exec sacha-phd-pytorch_parallelproj_tests pytest --rootdir ${WORKSPACE}/noise2noise
+          docker exec sacha-phd-pytorch_parallelproj_tests bash -c "pip install pytest && pytest --rootdir ${WORKSPACE}/noise2noise"
 
     - name: Clean up and stop container
       if: always()
