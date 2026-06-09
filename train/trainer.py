@@ -638,12 +638,12 @@ class Noise2NoiseTrainer(PytorchTrainer):
                         corr=corr
                     )
                     if self.supervised:
-                        if self.nn_domain == 'image' and self.projection_consistency:
+                        if (self.nn_domain == 'image' and self.projection_consistency) or self.nn_domain == 'photon':
                             loss_target = nfpt / self.n_splits
                         else:
-                            loss_target = target
+                            loss_target = self.model.reconstruction(nfpt, scale=scale, corr=corr, attenuation_map=att, mode=self.reconstruction_type, **self.reconstruction_config)
                     else:
-                        if self.nn_domain and not self.projection_consistency:
+                        if self.nn_domain == 'image' and not self.projection_consistency:
                             loss_target = x_j
                         else:
                             loss_target = splitted_prompts[j]
@@ -758,15 +758,17 @@ class Noise2NoiseTrainer(PytorchTrainer):
                             # inference on i
                             out_i = splits_infered[i]
                             # Loss computation for pair (i, j)
-                            if not self.supervised:
+                            if self.supervised:
+                                if (self.nn_domain == 'image' and self.projection_consistency) or self.nn_domain == 'photon':
+                                    loss_target = nfpt / self.n_splits
+                                else:
+                                    loss_target = self.model.reconstruction(nfpt, scale=scale, corr=corr, attenuation_map=att, mode=self.reconstruction_type, **self.reconstruction_config)
+                            else:
                                 if self.nn_domain == 'image' and not self.projection_consistency:
                                     loss_target = x_j
                                 else:
                                     loss_target = y_splits[j]
-                                val_loss = self.compute_loss(output=out_i, target=loss_target, attenuation_map=att, corr=corr, scale=scale, mask_im=mask_im, mask_sino=mask_sino)
-                            else:
-                                loss_target = nfpt / self.n_splits if (self.projection_consistency) else target
-                                val_loss = self.compute_loss(output=out_i, target=loss_target, attenuation_map=att, corr=corr, scale=scale, mask_im=mask_im, mask_sino=mask_sino)
+                            val_loss = self.compute_loss(output=out_i, target=loss_target, attenuation_map=att, corr=corr, scale=scale, mask_im=mask_im, mask_sino=mask_sino)
                             val_split_losses.append(val_loss)
                             # Update n2n_ and loss metrics for validation
                             metrics_to_update = [ m.name for m in self.metrics if m.name.startswith('n2n_') or m.name.startswith('loss_') ]
