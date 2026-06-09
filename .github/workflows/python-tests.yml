@@ -18,59 +18,22 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Start MLFlow container
+    - name: Check MLFlow
       run: |
-        docker run \
-          --gpus all \
-          -d \
-          --name sacha-phd-mlflow_tests \
-          --restart unless-stopped \
-          -p 5002:5002 \
-          -p 2251:5002 \
-          -v /mlflow-sacha-phd-labs:/mlflow-sacha-phd-labs \
-          --network mlflow-net \
-          ghcr.io/mlflow/mlflow:latest \
-          mlflow server \
-          --host 0.0.0.0 \
-          --port 5002 \
-          --backend-store-uri sqlite:////mlflow-sacha-phd-labs/mlflow.db \
-          --default-artifact-root /mlflow-sacha-phd-labs/artifacts \
-          --allowed-hosts "*"
-        sleep 5
+        if [ "$(docker ps -q -f name=sacha-phd-mlflow)" ]; then
+          echo "Container sacha-phd-mlflow is running."
+        else
+          echo "Container sacha-phd-mlflow is not running."
+          exit 1
 
-    - name: Start container
+    - name: Check pytorch_parallelproj
       run: |
-        docker run \
-          --gpus all \
-          --shm-size 8g \
-          -e PYTHONUNBUFFERED="1" \
-          -e MLFLOW_TRACKING_URI="http://sacha-phd-mlflow_tests:5002" \
-          --network mlflow-net \
-          --restart unless-stopped \
-          -d \
-          -p 2223:22 \
-          -v /mlflow-sacha-phd-labs:/mlflow-sacha-phd-labs \
-          --name sacha-phd-pytorch_parallelproj_tests \
-          ghcr.io/sacha-phd-labs/pytorch_parallelproj:latest
+        if [ "$(docker ps -q -f name=sacha-phd-pytorch_parallelproj)" ]; then
+          echo "Container sacha-phd-pytorch_parallelproj is running."
+        else
+          echo "Container sacha-phd-pytorch_parallelproj is not running."
+          exit 1
 
     - name: Test with pytest
       run: |
-          docker exec sacha-phd-pytorch_parallelproj_tests bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate parallelproj_env && pip install pytest && pytest --rootdir ${WORKSPACE}/noise2noise"
-
-    - name: Clean up and stop container
-      if: always()
-      run: |
-        if [ "$(docker ps -a -q -f name=sacha-phd-pytorch_parallelproj_tests)" ]; then
-          if [ "$(docker ps -q -f name=sacha-phd-pytorch_parallelproj_tests)" ]; then
-            docker exec sacha-phd-pytorch_parallelproj_tests bash -c "rm -rf -- * .[^.] .??*"
-            docker stop sacha-phd-pytorch_parallelproj_tests
-          fi
-          docker rm sacha-phd-pytorch_parallelproj_tests
-        fi
-
-        if [ "$(docker ps -a -q -f name=sacha-phd-mlflow_tests)" ]; then
-          if [ "$(docker ps -q -f name=sacha-phd-mlflow_tests)" ]; then
-            docker stop sacha-phd-mlflow_tests
-          fi
-          docker rm sacha-phd-mlflow_tests
-        fi
+          docker exec sacha-phd-pytorch_parallelproj bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate parallelproj_env && pytest --rootdir ${WORKSPACE}/noise2noise"
