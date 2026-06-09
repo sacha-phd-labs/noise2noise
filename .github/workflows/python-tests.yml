@@ -25,14 +25,14 @@ jobs:
           -d \
           --name sacha-phd-mlflow_tests \
           --restart unless-stopped \
-          -p 5001:5001 \
-          -p 2251:5001 \
+          -p 5002:5002 \
+          -p 2251:5002 \
           -v /mlflow-sacha-phd-labs:/mlflow-sacha-phd-labs \
           --network mlflow-net \
           ghcr.io/mlflow/mlflow:latest \
           mlflow server \
           --host 0.0.0.0 \
-          --port 5001 \
+          --port 5002 \
           --backend-store-uri sqlite:////mlflow-sacha-phd-labs/mlflow.db \
           --default-artifact-root /mlflow-sacha-phd-labs/artifacts \
           --allowed-hosts "*"
@@ -44,7 +44,7 @@ jobs:
           --gpus all \
           --shm-size 8g \
           -e PYTHONUNBUFFERED="1" \
-          -e MLFLOW_TRACKING_URI="http://sacha-phd-mlflow_tests:5001" \
+          -e MLFLOW_TRACKING_URI="http://sacha-phd-mlflow_tests:5002" \
           --network mlflow-net \
           --restart unless-stopped \
           -it \
@@ -60,10 +60,13 @@ jobs:
     - name: Clean up and stop container
       if: always()
       run: |
-        docker exec sacha-phd-pytorch_parallelproj_tests bash -c "rm -rf -- * .[^.] .??*" && \
-        docker stop sacha-phd-pytorch_parallelproj_tests && \
+        if [ "$(docker ps -q -f name=sacha-phd-pytorch_parallelproj_tests)" ]; then
+          docker exec sacha-phd-pytorch_parallelproj_tests bash -c "rm -rf -- * .[^.] .??*"
+          docker stop sacha-phd-pytorch_parallelproj_tests
+        fi
         docker rm sacha-phd-pytorch_parallelproj_tests
 
-        docker exec sacha-phd-mlflow_tests bash -c "rm -rf -- * .[^.] .??*" && \
-        docker stop sacha-phd-mlflow_tests && \
+        if [ "$(docker ps -q -f name=sacha-phd-mlflow_tests)" ]; then
+          docker stop sacha-phd-mlflow_tests
+        fi
         docker rm sacha-phd-mlflow_tests
