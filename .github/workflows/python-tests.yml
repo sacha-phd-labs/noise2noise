@@ -1,0 +1,68 @@
+name: Noise2Noise tests
+
+on:
+  push:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+
+jobs:
+  test_pet_simulation:
+
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Start MLFlow container if not reachable
+      run: |
+        if ! curl -s http://sacha-phd-mlflow:5001 > /dev/null 2>&1; then
+          echo "MLFlow container is not reachable. Starting it..."
+          docker run \
+            --gpus all \
+            -d \
+            --name sacha-phd-mlflow \
+            --restart unless-stopped \
+            -p 5001:5001 \
+            -p 2250:5001 \
+            -v /mlflow-sacha-phd-labs:/mlflow-sacha-phd-labs \
+            --network mlflow-net \
+            ghcr.io/mlflow/mlflow:latest \
+            mlflow server \
+            --host 0.0.0.0 \
+            --port 5001 \
+            --backend-store-uri sqlite:////mlflow-sacha-phd-labs/mlflow.db \
+            --default-artifact-root /mlflow-sacha-phd-labs/artifacts \
+            --allowed-hosts "*"
+          sleep 5
+        fi
+
+    - name: Start container
+      run: |
+        docker run \
+          --gpus all \
+          --shm-size 8g \
+          -e PYTHONUNBUFFERED="1" \
+          -e MLFLOW_TRACKING_URI="http://sacha-phd-mlflow:5001" \
+          --network mlflow-net \
+          --restart unless-stopped \
+          -it \
+          -p 2222:22 \
+          -v /mlflow-sacha-phd-labs:/mlflow-sacha-phd-labs \
+          --name sacha-phd-pytorch_parallelproj_tests \
+          ghcr.io/sacha-phd-labs/pytorch_parallelproj:latest
+
+    - name: Test with pytest
+      run: |
+          docker exec sacha-phd-pytorch_parallelproj_tests pytest --rootdir ${WORKSPACE}/noise2noise
+
+    - name: Clean up and stop container
+      if: always()
+      run: |
+        docker exec sacha-phd-pytorch_parallelproj_tests bash -c "rm -rf -- * .[^.] .??*" && \
+        docker stop sacha-phd-pytorch_parallelproj_tests && \
+        docker rm sacha-phd-pytorch_parallelproj_tests
