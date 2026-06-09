@@ -18,28 +18,25 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Start MLFlow container if not reachable
+    - name: Start MLFlow container
       run: |
-        if ! curl -s http://sacha-phd-mlflow:5001 > /dev/null 2>&1; then
-          echo "MLFlow container is not reachable. Starting it..."
-          docker run \
-            --gpus all \
-            -d \
-            --name sacha-phd-mlflow \
-            --restart unless-stopped \
-            -p 5001:5001 \
-            -p 2250:5001 \
-            -v /mlflow-sacha-phd-labs:/mlflow-sacha-phd-labs \
-            --network mlflow-net \
-            ghcr.io/mlflow/mlflow:latest \
-            mlflow server \
-            --host 0.0.0.0 \
-            --port 5001 \
-            --backend-store-uri sqlite:////mlflow-sacha-phd-labs/mlflow.db \
-            --default-artifact-root /mlflow-sacha-phd-labs/artifacts \
-            --allowed-hosts "*"
-          sleep 5
-        fi
+        docker run \
+          --gpus all \
+          -d \
+          --name sacha-phd-mlflow_tests \
+          --restart unless-stopped \
+          -p 5001:5001 \
+          -p 2250:5001 \
+          -v /mlflow-sacha-phd-labs:/mlflow-sacha-phd-labs \
+          --network mlflow-net \
+          ghcr.io/mlflow/mlflow:latest \
+          mlflow server \
+          --host 0.0.0.0 \
+          --port 5001 \
+          --backend-store-uri sqlite:////mlflow-sacha-phd-labs/mlflow.db \
+          --default-artifact-root /mlflow-sacha-phd-labs/artifacts \
+          --allowed-hosts "*"
+        sleep 5
 
     - name: Start container
       run: |
@@ -47,7 +44,7 @@ jobs:
           --gpus all \
           --shm-size 8g \
           -e PYTHONUNBUFFERED="1" \
-          -e MLFLOW_TRACKING_URI="http://sacha-phd-mlflow:5001" \
+          -e MLFLOW_TRACKING_URI="http://sacha-phd-mlflow_tests:5001" \
           --network mlflow-net \
           --restart unless-stopped \
           -it \
@@ -66,3 +63,7 @@ jobs:
         docker exec sacha-phd-pytorch_parallelproj_tests bash -c "rm -rf -- * .[^.] .??*" && \
         docker stop sacha-phd-pytorch_parallelproj_tests && \
         docker rm sacha-phd-pytorch_parallelproj_tests
+
+        docker exec sacha-phd-mlflow_tests bash -c "rm -rf -- * .[^.] .??*" && \
+        docker stop sacha-phd-mlflow_tests && \
+        docker rm sacha-phd-mlflow_tests
