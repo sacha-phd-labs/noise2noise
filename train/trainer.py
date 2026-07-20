@@ -21,7 +21,7 @@ from tools.image.processing import normalize
 
 import matplotlib.pyplot as plt
 import cv2
-from train.format_brain import get_brain_figure
+from tools.image.figure import format_phantom_figure
 
 def get_white_matter_mask(brain):
     white_matter_mask = (brain == 36.0)
@@ -239,13 +239,15 @@ class Noise2NoiseTrainer(PytorchTrainer):
         loader_val = DataLoader(self.dataset_val, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers)
 
         # Generate SinogramGenerator for testing on specific images
-        # For instance the brain phantom
+        # For instance the brain phantom and the lung phantom.
         self.dataset_val_specific = SinogramGeneratorSavedImages(
             dest_path=os.path.join(self.dest_path, 'val_specific'),
             acquisition_time=self.dataset_train.acquisition_time, # use same acquisition time as training set
             seed = self.seed,
-            obj_path=f"{os.getenv('WORKSPACE')}/data/brain_web_phantom/object/gt_web_after_scaling.hdr",
-            att_path=f"{os.getenv('WORKSPACE')}/data/brain_web_phantom/object/attenuat_brain_phantom.hdr",
+            obj_path=(f"{os.getenv('WORKSPACE')}/data/brain_web_phantom/object/gt_web_after_scaling.hdr",
+                       f"{os.getenv('WORKSPACE')}/data/lung_phantom/object/FDG_slice38.hdr"),
+            att_path=(f"{os.getenv('WORKSPACE')}/data/brain_web_phantom/object/attenuat_brain_phantom.hdr",
+                       f"{os.getenv('WORKSPACE')}/data/lung_phantom/object/CTAC_slice38.hdr"),
             **self.simulator_config
         )
 
@@ -810,7 +812,12 @@ class Noise2NoiseTrainer(PytorchTrainer):
             # perform evaluation on brain phantom and log results as artifact for visual inspection of model performance evolution during training
             for batch_idx, (path, prompt, nfpt, gth, att, att_sino, corr, scale) in enumerate(self.dataset_val_specific):
 
-                print(f'Inference on brain phantom for visual inspection of model performance evolution during training, batch {batch_idx+1}/{len(self.dataset_val_specific)} ...')
+                if batch_idx == 0:
+                    phantom_name = "brain_web_phantom"
+                elif batch_idx == 1:
+                    phantom_name = "lung_phantom"
+
+                print(f'Inference on {phantom_name} for visual inspection of model performance evolution during training, batch {batch_idx+1}/{len(self.dataset_val_specific)} ...')
 
 
                 # move data to device
@@ -823,6 +830,8 @@ class Noise2NoiseTrainer(PytorchTrainer):
                 corr = corr.to(self.device).float().unsqueeze(0) # add batch dimension
 
                 # Denoised reconstruction from prompt
+                self.model.image_size = gth.shape[-2:] # update model image size to match phantom image size
+                #
                 recon_noise2noise = self.model.forward_inference(prompt, scale=scale, corr=corr, attenuation_map=att, monte_carlo_steps=1, split=True, mask=(gth > 0)) # (B, C, H, W)
                 recon_noise2noise = recon_noise2noise.to('cpu').squeeze().detach().numpy().astype(np.float32)
                 gth = gth.to('cpu').float().squeeze().detach().numpy().astype(np.float32)
@@ -837,13 +846,14 @@ class Noise2NoiseTrainer(PytorchTrainer):
                     'psnr': PSNR_denoised.item(),
                     'ssim': SSIM_denoised.item()
                 }
-                # bias variance
-                white_matter_mask = get_white_matter_mask(gth)
-                bias_white_matter = (torch.abs(torch.mean(torch.tensor(recon_noise2noise)[white_matter_mask]) - torch.tensor(gth)[white_matter_mask][0]) / torch.tensor(gth)[white_matter_mask][0]).item()
-                expectation_squared_white_matter = torch.mean(torch.tensor(recon_noise2noise)[white_matter_mask] ** 2).item()
-                variance_white_matter = (torch.sqrt(expectation_squared_white_matter - (torch.mean(torch.tensor(recon_noise2noise)[white_matter_mask]) ** 2)) / torch.mean(torch.tensor(recon_noise2noise)[white_matter_mask])).item()
-                metrics['bias_white_matter'] = bias_white_matter
-                metrics['variance_white_matter'] = variance_white_matter
+                if phantom_name == "brain_web_phantom":
+                    # bias variance
+                    white_matter_mask = get_white_matter_mask(gth)
+                    bias_white_matter = (torch.abs(torch.mean(torch.tensor(recon_noise2noise)[white_matter_mask]) - torch.tensor(gth)[white_matter_mask][0]) / torch.tensor(gth)[white_matter_mask][0]).item()
+                    expectation_squared_white_matter = torch.mean(torch.tensor(recon_noise2noise)[white_matter_mask] ** 2).item()
+                    variance_white_matter = (torch.sqrt(expectation_squared_white_matter - (torch.mean(torch.tensor(recon_noise2noise)[white_matter_mask]) ** 2)) / torch.mean(torch.tensor(recon_noise2noise)[white_matter_mask])).item()
+                    metrics['bias_white_matter'] = bias_white_matter
+                    metrics['variance_white_matter'] = variance_white_matter
                 #
                 reconstructions = {
                     'denoised': recon_noise2noise
@@ -851,7 +861,7 @@ class Noise2NoiseTrainer(PytorchTrainer):
                 
                 if epoch == 0:
                     for input_type, input in zip(['nfpt', 'prompt'], [nfpt, prompt]):
-                        recon_input = self.model.reconstruction(input, scale=scale, corr=corr, attenuation_map=att, mode=self.reconstruction_type, **self.reconstruction_config).to('cpu').squeeze().detach().numpy().astype(np.float32)
+                        recon_input = self.model.reconstruction(input, scale=scale, corr=corr, attenuation_map=att, **self.reconstruction_config).to('cpu').squeeze().detach().numpy().astype(np.float32)
                         recon_input = recon_input
                         PSNR_input = PSNR(I=gth, K=recon_input, mask=mask)
                         SSIM_input = SSIM(img1=gth, img2=recon_input, mask=mask)
@@ -864,38 +874,59 @@ class Noise2NoiseTrainer(PytorchTrainer):
                     tmp_save_path = os.path.join(self.dest_path, f'reconstruction_{input_type}_raw/epoch_{epoch+1}.npy')
                     os.makedirs(os.path.dirname(tmp_save_path), exist_ok=True)
                     np.save(tmp_save_path, recon)
-                    mlflow.log_artifact(tmp_save_path, artifact_path='brain_phantom')
+                    mlflow.log_artifact(tmp_save_path, artifact_path=phantom_name)
                     os.remove(tmp_save_path)
                     # log figure with metrics as annotations
-                    fig = get_brain_figure(recon, annotations={
-                        'ssim': metrics.get(f'ssim_{input_type}', metrics.get('ssim', None)),
-                        'psnr': metrics.get(f'psnr_{input_type}', metrics.get('psnr', None)),
-                    })
-                    mlflow.log_figure(fig, f'brain_phantom/reconstruction_{input_type}/epoch_{epoch+1}.png')
+                    if phantom_name == "brain_web_phantom":
+                        format_kwargs = {
+                            'magnification': 2,
+                            'vmin': 0.0,
+                            'vmax': 230.0,
+                            'roi_mask': [[24, 79], [31, 86]],
+                            'shift': True
+                        }
+                    elif phantom_name == "lung_phantom":
+                        format_kwargs = {
+                            'magnification': 3,
+                            'vmin': 0.0,
+                            'vmax': 80.0,
+                            'roi_mask': [[42, 115], [50, 123]],
+                            'shift': (None, 5)
+                        }
+                    fig = format_phantom_figure(
+                        recon,
+                        annotations={
+                            'ssim': metrics.get(f'ssim_{input_type}', metrics.get('ssim', None)),
+                            'psnr': metrics.get(f'psnr_{input_type}', metrics.get('psnr', None)),
+                        },
+                        **format_kwargs
+                    )
+                    mlflow.log_figure(fig, f'{phantom_name}/reconstruction_{input_type}/epoch_{epoch+1}.png')
                 #
-                mlflow.log_dict(metrics, f'brain_phantom/metrics_epoch/{epoch+1}.json')
-                # mlflow.log_figure(fig, f'brain_phantom/reconstruction/epoch_{epoch+1}.png')
+                mlflow.log_dict(metrics, f'{phantom_name}/metrics_epoch/{epoch+1}.json')
+                # mlflow.log_figure(fig, f'{phantom_name}/reconstruction/epoch_{epoch+1}.png')
 
-                # plot paretto front evolution for bias and variance on brain phantom during training
-                white_matter_bias = []
-                white_matter_variance = []
-                for epoch_ in range(0, epoch+1):
-                    artifact_path = f'brain_phantom/metrics_epoch/{epoch_+1}.json'
-                    metrics = mlflow.artifacts.load_dict(f"{mlflow.active_run().info.artifact_uri}/{artifact_path}")
-                    white_matter_bias.append(metrics.get('bias_white_matter', None))
-                    white_matter_variance.append(metrics.get('variance_white_matter', None))
+                if phantom_name == "brain_web_phantom":
+                    # plot paretto front evolution for bias and variance on brain phantom during training
+                    white_matter_bias = []
+                    white_matter_variance = []
+                    for epoch_ in range(0, epoch+1):
+                        artifact_path = f'{phantom_name}/metrics_epoch/{epoch_+1}.json'
+                        metrics = mlflow.artifacts.load_dict(f"{mlflow.active_run().info.artifact_uri}/{artifact_path}")
+                        white_matter_bias.append(metrics.get('bias_white_matter', None))
+                        white_matter_variance.append(metrics.get('variance_white_matter', None))
 
-                with plt.style.context('ggplot'):
-                    fig, ax = plt.subplots(1, 1, figsize=(5, 5))
-                    ax.plot(white_matter_variance, white_matter_bias, marker='o', color='gray')
-                    for epoch_, (bias, var) in enumerate(zip(white_matter_bias, white_matter_variance), start=1):
-                        ax.annotate(f'E{epoch_}', (var, bias), fontsize=8, ha='left')
-                    ax.set_ylabel('Bias in white matter')
-                    ax.set_xlabel('Variance in white matter')
-                    ax.set_title('Bias-Variance Evolution in White Matter during Training')
-                    plt.tight_layout()
-                    plt.close(fig)
-                    mlflow.log_figure(fig, 'brain_phantom/bias_variance_evolution.png')
+                    with plt.style.context('ggplot'):
+                        fig, ax = plt.subplots(1, 1, figsize=(5, 5))
+                        ax.plot(white_matter_variance, white_matter_bias, marker='o', color='gray')
+                        for epoch_, (bias, var) in enumerate(zip(white_matter_bias, white_matter_variance), start=1):
+                            ax.annotate(f'E{epoch_}', (var, bias), fontsize=8, ha='left')
+                        ax.set_ylabel('Bias in white matter')
+                        ax.set_xlabel('Variance in white matter')
+                        ax.set_title('Bias-Variance Evolution in White Matter during Training')
+                        plt.tight_layout()
+                        plt.close(fig)
+                        mlflow.log_figure(fig, f'{phantom_name}/bias_variance_evolution.png')
 
             # # metric monitoring
             m_dict = {**m_dict_train, **m_dict_val}
@@ -906,6 +937,9 @@ class Noise2NoiseTrainer(PytorchTrainer):
             #     else:
             #         mode = 'max'
             #     self.mlflow_metric_monitoring(epoch, metric_name, m_dict[metric_name], mode=mode)
+
+            # 
+            self.model.image_size = self.image_size # update model image size to training image size
 
             # log metrics
             for metric_name, metric_value in m_dict.items():

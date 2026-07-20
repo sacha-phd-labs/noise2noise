@@ -208,10 +208,10 @@ class SinogramGeneratorSavedImages(SinogramGenerator):
         super().__init__(*args, **kwargs)
         self.obj_path = obj_path
         self.att_path = att_path
-        if not isinstance(obj_path, list):
-            self.obj_path = [obj_path]
-        if not isinstance(att_path, list):
-            self.att_path = [att_path]
+        if not isinstance(obj_path, (list, tuple)):
+            self.obj_path = (obj_path,)
+        if not isinstance(att_path, (list, tuple)):
+            self.att_path = (att_path,)
         #
         assert len(self.obj_path) == len(self.att_path), "obj_path and att_path should have the same length"
         #
@@ -227,6 +227,29 @@ class SinogramGeneratorSavedImages(SinogramGenerator):
     def generate_phantom(self, idx):
         return self.obj_path[idx], self.att_path[idx]
     
+    def get_sinogram_simulator(self, idx):
+        """Simulation parameters may change as test images may have different sizes and voxel sizes."""
+        data_gth, metadata = read_castor_binary_file(self.obj_path[idx], return_metadata=True)
+        data_gth = data_gth.squeeze()
+        voxel_size = (float(metadata.get('scaling factor (mm/pixel) [1]', 2.0)), float(metadata.get('scaling factor (mm/pixel) [2]', 2.0)))
+        if data_gth.shape != self.sinogram_simulator.proj.img_shape or voxel_size != self.sinogram_simulator.proj.voxel_size_mm:
+            # Re-initialize sinogram simulator with new image size and voxel size
+            self.sinogram_simulator = PetSystem(
+                projector_type='parallelproj_parallel',
+                projector_config={
+                    'scanner_radius_mm': self.sinogram_simulator.scanner_radius_mm,
+                    'num_angles': self.sinogram_simulator.num_angles,
+                    'img_shape': data_gth.shape,
+                    'voxel_size_mm': voxel_size,
+                },
+                scatter_component=self.scatter_component,
+                scatter_sigma=self.scatter_sigma,
+                random_component=self.random_component,
+                gaussian_PSF=self.gaussian_PSF,
+                half_life=self.half_life,
+                seed=self.seed
+            )
+    
     def set_acquisition_time(self, idx):
         # Read Image ground truth
         data_gth = read_castor_binary_file(self.obj_path[idx]).squeeze()
@@ -241,6 +264,8 @@ class SinogramGeneratorSavedImages(SinogramGenerator):
         return self.acquisition_time
     
     def simulate_sinogram(self, idx):
+
+        self.get_sinogram_simulator(idx)
 
         self.set_acquisition_time(idx)
         #
