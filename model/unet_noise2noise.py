@@ -46,7 +46,7 @@ class ModelInheritanceHandler:
                 raise ValueError(f"Parent class {parent_class_name} not found and could not import from pytorcher.models.")
 
 @ModelInheritanceHandler.register_subclass
-class Noise2NoisePETModel(nn.Module):
+class Noise2NoiseBackboneModel(nn.Module):
 
     """
     U-Net model for Noise2Noise.
@@ -82,7 +82,7 @@ class Noise2NoisePETModel(nn.Module):
         assert self.reconstruction_type.lower() in ['fbp', 'mlem'], "Currently only FBP and MLEM are supported."
         #
         # must call nn.Module init before assigning any nn.Module attributes such as done in init_pet_system_operator and get_reconstruction_operator
-        super(Noise2NoisePETModel, self).__init__(**nn_config)
+        super(Noise2NoiseBackboneModel, self).__init__(**nn_config)
     
     def __getstate__(self):
         """Prepare model for pickling by storing the parent class name."""
@@ -316,3 +316,43 @@ class Noise2NoisePETModel(nn.Module):
         if mask is not None:
             output = output * mask
         return output
+
+class Noise2NoiseGradientStepDenoiser(Noise2NoiseBackboneModel):
+    """
+    Update forward pass to include gradient step denoising
+    as introduced by Hureault et al. in "GRADIENT STEP DENOISER FOR CONVERGENT PLUG-AND-PLAY
+    DOI : 10.48550/arXiv.2110.03220
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        assert self.domain == 'image', "Gradient step denoiser is only applicable for image domain models."
+
+    def forward(self, y, x=None, scale=None, mask=None, corr=None, attenuation_map=None, return_g=False):
+
+        with torch.enable_grad():
+
+            if x is None:
+                # It is mandatory to initialize x for gradient tracking.
+                x = self.reconstruction(y, scale=scale, corr=corr, attenuation_map=attenuation_map, **self.reconstruction_config)  # (B, C, H, W)
+                
+            x.requires_grad_(True)
+            N_x = super().forward(y, x=x, scale=scale, mask=mask, corr=corr, attenuation_map=attenuation_map)
+
+            g = 0.5 * torch.sum((N_x - x) ** 2, dim=[1,2,3])  # (B,)
+            g_sum = g.sum()
+
+            if return_g:
+                return g_sum
+            grad_g = torch.autograd.grad(g_sum, x, create_graph=self.training)[0]  # (B, C, H, W)
+
+            # Update x with gradient step
+            x = x - grad_g
+
+        if mask is not None:
+            x = x * mask
+
+        # # softplus
+        # x = torch.nn.functional.softplus(x)
+
+        return x

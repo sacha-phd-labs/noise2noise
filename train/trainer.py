@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 import multiprocessing
 
 from data.data_loader import SinogramGenerator, SinogramGeneratorSavedImages
-from model.unet_noise2noise import Noise2NoisePETModel, ModelInheritanceHandler
+from model.unet_noise2noise import Noise2NoiseBackboneModel, ModelInheritanceHandler, Noise2NoiseGradientStepDenoiser
 
 from pytorcher.trainer import PytorchTrainer
 from pytorcher.utils import normalize_batch
@@ -63,12 +63,13 @@ class Noise2NoiseTrainer(PytorchTrainer):
                 'lr': 1e-3,
                 'weight_decay': 1e-5,
             },
-            model_class_name='UNet',
+            backbone_model_name='UNet',
             nn_config = {
                 'conv_layer_type': 'SinogramConv2d',
                 'n_levels': 4,
                 'global_conv': 32,
             },
+            use_gsd=True,
             nn_domain='image',
             supervised=False,
             reconstruction_type='fbp',
@@ -100,7 +101,8 @@ class Noise2NoiseTrainer(PytorchTrainer):
         if nn_domain == 'image':
             assert reconstruction_type is not None and reconstruction_type in ['fbp', 'mlem'], "Currently only 'fbp' and 'mlem' reconstructions are supported."
         assert n_splits > 1, "n_splits must be greater than 1 for noise2noise training."
-        self.model_class_name = model_class_name
+        self.backbone_model_name = backbone_model_name
+        self.use_gsd = use_gsd
         self.nn_config = nn_config
         self.nn_domain = nn_domain
         self.model_name = f'Noise2Noise_2DPET_{nn_domain}'
@@ -277,8 +279,12 @@ class Noise2NoiseTrainer(PytorchTrainer):
 
     def create_model(self):
         # model expects channel-first inputs: we'll add channel dimension when calling
-        ModelInheritanceHandler.set_parent(self.model_class_name)
-        model = Noise2NoisePETModel(
+        ModelInheritanceHandler.set_parent(self.backbone_model_name)
+        if self.use_gsd:
+            model_class = Noise2NoiseGradientStepDenoiser
+        else:
+            model_class = Noise2NoiseBackboneModel
+        model = model_class(
             domain=self.nn_domain,
             geometry={
                 'n_angles': self.n_angles,
