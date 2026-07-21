@@ -118,6 +118,8 @@ class Noise2NoiseBackboneModel(nn.Module):
                 gaussian_PSF=self.gaussian_PSF,
                 device=device
             )
+        else:
+            pet_system_operator = self.pet_system_operator
 
         return pet_system_operator
 
