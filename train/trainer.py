@@ -352,13 +352,13 @@ class Noise2NoiseTrainer(PytorchTrainer):
                 corr = corr.to(self.device).float()
 
                 # reconstruction from noise-free sinogram
-                recon_nfpt = self.model.reconstruction(nfpt, scale=scale, corr=corr, attenuation_map=att, mode=self.reconstruction_type, **self.reconstruction_config)
+                recon_nfpt = self.model.reconstruction(nfpt, scale=scale, corr=corr, attenuation_map=att, **self.reconstruction_config)
                 # update im_ metrics for reference
                 metrics_to_update = [ m.name for m in self.metrics if 'nfpt' in m.name ]
                 self.update_metrics(normalize_batch(gth), normalize_batch(recon_nfpt), metric_names=metrics_to_update)
 
                 # reconstruction from prompt sinogram
-                recon_prompt = self.model.reconstruction(prompt, scale=scale, corr=corr, attenuation_map=att, mode=self.reconstruction_type, **self.reconstruction_config)
+                recon_prompt = self.model.reconstruction(prompt, scale=scale, corr=corr, attenuation_map=att, **self.reconstruction_config)
                 # update im_ metrics for reference
                 metrics_to_update = [ m.name for m in self.metrics if 'prompt' in m.name ]
                 self.update_metrics(normalize_batch(gth), normalize_batch(recon_prompt), metric_names=metrics_to_update)
@@ -618,7 +618,7 @@ class Noise2NoiseTrainer(PytorchTrainer):
                 if self.nn_domain == 'photon':
                     x =None
                 else:
-                    x = [self.model.reconstruction(s, scale=scale, corr=corr, attenuation_map=att, mode=self.reconstruction_type, **self.reconstruction_config) for s in splitted_prompts]
+                    x = [self.model.reconstruction(s, scale=scale, corr=corr, attenuation_map=att, **self.reconstruction_config) for s in splitted_prompts]
 
                 if self.nn_domain == 'photon':
                     target = target / self.n_splits # In photon domain, we divide poisson parameter accordingly
@@ -650,7 +650,7 @@ class Noise2NoiseTrainer(PytorchTrainer):
                         if (self.nn_domain == 'image' and self.projection_consistency) or self.nn_domain == 'photon':
                             loss_target = nfpt / self.n_splits
                         else:
-                            loss_target = self.model.reconstruction(nfpt, scale=scale, corr=corr, attenuation_map=att, mode=self.reconstruction_type, **self.reconstruction_config)
+                            loss_target = self.model.reconstruction(nfpt, scale=scale, corr=corr, attenuation_map=att, **self.reconstruction_config)
                     else:
                         if self.nn_domain == 'image' and not self.projection_consistency:
                             loss_target = x_j
@@ -729,7 +729,7 @@ class Noise2NoiseTrainer(PytorchTrainer):
 
                         # Apply reconstruction if needed
                         if self.nn_domain == 'image':
-                            x = [self.model.reconstruction(s, scale=scale, corr=corr, attenuation_map=att, mode=self.reconstruction_type, **self.reconstruction_config) for s in y_splits]
+                            x = [self.model.reconstruction(s, scale=scale, corr=corr, attenuation_map=att, **self.reconstruction_config) for s in y_splits]
                         else:
                             x = None
 
@@ -771,7 +771,7 @@ class Noise2NoiseTrainer(PytorchTrainer):
                                 if (self.nn_domain == 'image' and self.projection_consistency) or self.nn_domain == 'photon':
                                     loss_target = nfpt / self.n_splits
                                 else:
-                                    loss_target = self.model.reconstruction(nfpt, scale=scale, corr=corr, attenuation_map=att, mode=self.reconstruction_type, **self.reconstruction_config)
+                                    loss_target = self.model.reconstruction(nfpt, scale=scale, corr=corr, attenuation_map=att, **self.reconstruction_config)
                             else:
                                 if self.nn_domain == 'image' and not self.projection_consistency:
                                     loss_target = x_j
@@ -798,7 +798,7 @@ class Noise2NoiseTrainer(PytorchTrainer):
                         self.update_loss(val_loss)
                         # Apply reconstruction if needed and average outputs
                         if self.nn_domain == 'photon':
-                            output = [ self.model.reconstruction(s, scale=scale, corr=corr, attenuation_map=att, mode=self.reconstruction_type, **self.reconstruction_config) for s in splits_infered ]  # (B, C, H, W)
+                            output = [ self.model.reconstruction(s, scale=scale, corr=corr, attenuation_map=att, **self.reconstruction_config) for s in splits_infered ]  # (B, C, H, W)
                             output = torch.stack(output, dim=0)  # (n_splits, B, C, H, W)
                             output = torch.mean(output, dim=0)  # (B, C, H, W)
                         else:

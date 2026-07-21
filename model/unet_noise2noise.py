@@ -121,9 +121,9 @@ class Noise2NoiseBackboneModel(nn.Module):
 
         return pet_system_operator
 
-    def reconstruction(self, y, scale=None, attenuation_map=None, corr=None, mode='fbp', **kwargs):
+    def reconstruction(self, y, scale=None, attenuation_map=None, corr=None, **kwargs):
 
-        if mode == 'fbp':
+        if self.reconstruction_type.lower() == 'fbp':
             # update scale if corr is provided
             if corr is not None and scale is not None:
                 count_ratio = torch.sum(corr, dim=[1,2,3]) / (torch.sum(y, dim=[1,2,3]))  # (B,)
@@ -134,13 +134,11 @@ class Noise2NoiseBackboneModel(nn.Module):
 
         pet_system_operator = self.get_pet_system_operator()
         #
-        if mode == 'fbp':
+        if self.reconstruction_type.lower() == 'fbp':
             x_recon = pet_system_operator.fbp(y, scale=scale, **kwargs) # (B, C, H, W)
 
-        elif mode == 'mlem':
+        elif self.reconstruction_type.lower() == 'mlem':
             x_recon = pet_system_operator.mlem(y, corr=corr, attenuation_map=attenuation_map, scale=scale, **kwargs) # (B, C, H, W)
-        else:
-            raise ValueError(f"Unknown reconstruction mode: {mode}")
 
         
         return x_recon
@@ -247,7 +245,7 @@ class Noise2NoiseBackboneModel(nn.Module):
 
             # Apply reconstruction if needed and average outputs
             if self.domain == 'photon':
-                output = self.reconstruction(splits_denoised, scale=scale, corr=corr, attenuation_map=attenuation_map, mode=self.reconstruction_type, **self.reconstruction_config)
+                output = self.reconstruction(splits_denoised, scale=scale, corr=corr, attenuation_map=attenuation_map, **self.reconstruction_config)
             else:
                 output = splits_denoised
             
@@ -278,7 +276,7 @@ class Noise2NoiseBackboneModel(nn.Module):
         """
 
         if self.domain == 'image' and x is None:
-            x = self.reconstruction(y, scale=scale, corr=corr, attenuation_map=attenuation_map, mode=self.reconstruction_type, **self.reconstruction_config)  # (B, C, H, W)
+            x = self.reconstruction(y, scale=scale, corr=corr, attenuation_map=attenuation_map, **self.reconstruction_config)  # (B, C, H, W)
         elif self.domain == 'photon':
             x = None
         #
